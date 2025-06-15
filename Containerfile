@@ -11,6 +11,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         software-properties-common \
         wget \
+	curl \
         build-essential \
         python3-pip \
         python3-dev \
@@ -50,19 +51,20 @@ RUN pip3 install --no-cache-dir --upgrade pip && \
     pip3 install --no-cache-dir sentence-transformers && \
     pip3 install --no-cache-dir PyPDF2 python-multipart python-dotenv
 
+USER 0
+
 # Create directories with proper permissions
-RUN mkdir -p /app/documents /app/vectordb /app/logs /tmp/uploads && \
-    chmod -R 777 /app/documents /app/vectordb /app/logs /tmp/uploads && \
-    chown -R appuser:appuser /app/documents /app/vectordb /app/logs /tmp/uploads
+RUN mkdir -p /app/documents /app/vectordb /app/models /app/logs /tmp/uploads && \
+    chmod -R 777 /app/documents /app/vectordb /app/models /app/logs /tmp/uploads && \
+    chown -R appuser:appuser /app/documents /app/vectordb /app/models /app/logs /tmp/uploads
+
+USER appuser
 
 # Set environment variables
 ENV DOCUMENTS_DIR=/app/documents \
     CHROMA_DB_PATH=/app/vectordb \
     PYTHONPATH=/app \
     SENTENCE_TRANSFORMERS_HOME=/app/models
-
-# Switch to non-root user
-USER appuser
 
 # Expose port
 EXPOSE 8080

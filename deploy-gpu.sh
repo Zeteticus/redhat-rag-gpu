@@ -50,8 +50,8 @@ fi
 
 # Create directories with proper permissions
 log_info "Setting up directories..."
-mkdir -p documents data/{vectordb,logs,backups} static
-chmod -R 777 documents data
+mkdir -p documents data/{vectordb,models,logs,backups} static
+#chmod -R 777 documents data
 
 # Create default .env file if it doesn't exist
 if [ ! -f ".env" ]; then
@@ -95,7 +95,7 @@ if [ $? -eq 0 ]; then
           --volume $(pwd)/data/vectordb:/app/vectordb:rw \
           --volume $(pwd)/data/logs:/app/logs:rw \
           --env-file .env \
-          --device nvidia.com/gpu=all \
+          --gpus all \
           --replace \
           $IMAGE_NAME"
     else
