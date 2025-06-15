@@ -11,7 +11,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         software-properties-common \
         wget \
-	curl \
+        curl \
         build-essential \
         python3-pip \
         python3-dev \
@@ -37,8 +37,13 @@ RUN useradd -m appuser
 
 # Copy application files
 COPY main.py .
-COPY static/ ./static/
 COPY .env .
+
+# Create static directory and copy frontend files
+RUN mkdir -p /app/static
+
+# Copy frontend to container
+COPY static/index.html /app/static/index.html
 
 # Install GPU-enabled PyTorch and dependencies
 RUN pip3 install --no-cache-dir --upgrade pip && \
@@ -51,6 +56,7 @@ RUN pip3 install --no-cache-dir --upgrade pip && \
     pip3 install --no-cache-dir sentence-transformers && \
     pip3 install --no-cache-dir PyPDF2 python-multipart python-dotenv
 
+# Switch to root to set up directories
 USER 0
 
 # Create directories with proper permissions
@@ -58,6 +64,11 @@ RUN mkdir -p /app/documents /app/vectordb /app/models /app/logs /tmp/uploads && 
     chmod -R 777 /app/documents /app/vectordb /app/models /app/logs /tmp/uploads && \
     chown -R appuser:appuser /app/documents /app/vectordb /app/models /app/logs /tmp/uploads
 
+# Ensure static directory has proper permissions
+RUN chmod -R 755 /app/static && \
+    chown -R appuser:appuser /app/static
+
+# Switch back to non-root user
 USER appuser
 
 # Set environment variables
