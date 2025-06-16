@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Red Hat Documentation Assistant</title>
+    <title>Red Hat Documentation RAG Search</title>
     <style>
         * {
             margin: 0;
@@ -13,669 +13,701 @@
 
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #1e1e1e 0%, #2c2c2c 100%);
-            color: #e0e0e0;
-            min-height: 100vh;
             line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #CC0000 0%, #8B0000 100%);
+            min-height: 100vh;
         }
 
         .container {
-            max-width: 1400px;
+            max-width: 1200px;
             margin: 0 auto;
             padding: 20px;
         }
 
         .header {
-            background: linear-gradient(135deg, #cc0000 0%, #a30000 100%);
-            padding: 30px;
             text-align: center;
-            box-shadow: 0 4px 20px rgba(204, 0, 0, 0.3);
-            border-radius: 10px;
+            color: white;
             margin-bottom: 30px;
         }
 
         .header h1 {
-            color: white;
-            font-size: 2.5rem;
+            font-size: 2.5em;
             margin-bottom: 10px;
             text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
         }
 
-        .header p {
-            color: #ffcccc;
-            font-size: 1.1rem;
-            opacity: 0.9;
-        }
-
         .search-section {
-            background: rgba(255, 255, 255, 0.05);
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            padding: 30px;
+            background: white;
             border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
             margin-bottom: 30px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
         }
 
         .search-form {
             display: flex;
+            flex-direction: column;
             gap: 15px;
-            margin-bottom: 20px;
-            flex-wrap: wrap;
         }
 
         .search-input {
-            flex: 1;
-            min-width: 300px;
-            padding: 15px 20px;
-            font-size: 1.1rem;
-            border: 2px solid rgba(255, 255, 255, 0.2);
-            border-radius: 8px;
-            background: rgba(255, 255, 255, 0.1);
-            color: #e0e0e0;
-            transition: all 0.3s ease;
+            padding: 15px;
+            border: 2px solid #ddd;
+            border-radius: 10px;
+            font-size: 16px;
+            transition: border-color 0.3s ease;
         }
 
         .search-input:focus {
             outline: none;
-            border-color: #cc0000;
-            background: rgba(255, 255, 255, 0.15);
-            box-shadow: 0 0 15px rgba(204, 0, 0, 0.3);
+            border-color: #CC0000;
         }
 
-        .search-input::placeholder {
-            color: #999;
-        }
-
-        .search-btn {
-            padding: 15px 30px;
-            background: linear-gradient(135deg, #cc0000 0%, #a30000 100%);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 1.1rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            min-width: 120px;
-        }
-
-        .search-btn:hover {
-            background: linear-gradient(135deg, #e60000 0%, #cc0000 100%);
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(204, 0, 0, 0.4);
-        }
-
-        .search-btn:disabled {
-            background: #666;
-            cursor: not-allowed;
-            transform: none;
-        }
-
-        .filters {
-            display: flex;
+        .search-options {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
             gap: 15px;
-            flex-wrap: wrap;
-            align-items: center;
+            margin: 15px 0;
         }
 
-        .filter-group {
+        .option-group {
             display: flex;
             flex-direction: column;
             gap: 5px;
         }
 
-        .filter-group label {
-            font-size: 0.9rem;
-            color: #ccc;
-            font-weight: 500;
+        .option-group label {
+            font-weight: 600;
+            color: #555;
         }
 
-        .filter-select {
-            padding: 8px 12px;
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            border-radius: 6px;
-            background: rgba(255, 255, 255, 0.1);
-            color: #e0e0e0;
-            font-size: 0.9rem;
+        .option-group select, .option-group input {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+
+        .search-btn {
+            background: linear-gradient(135deg, #CC0000 0%, #8B0000 100%);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s ease;
+        }
+
+        .search-btn:hover {
+            transform: translateY(-2px);
+        }
+
+        .search-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
         }
 
         .results-section {
-            background: rgba(255, 255, 255, 0.03);
-            border: 1px solid rgba(255, 255, 255, 0.1);
+            background: white;
             border-radius: 15px;
-            overflow: hidden;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            display: none;
         }
 
         .results-header {
-            background: rgba(255, 255, 255, 0.05);
-            padding: 20px 30px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
             display: flex;
             justify-content: space-between;
             align-items: center;
-            flex-wrap: wrap;
-            gap: 10px;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #eee;
         }
 
         .results-count {
-            font-size: 1.1rem;
-            color: #ccc;
+            font-size: 18px;
+            font-weight: 600;
+            color: #CC0000;
         }
 
-        .sort-options {
-            display: flex;
-            gap: 10px;
-            align-items: center;
-        }
-
-        .loading {
-            text-align: center;
-            padding: 60px;
-            color: #999;
-            font-size: 1.1rem;
-        }
-
-        .loading::after {
-            content: '';
-            display: block;
-            width: 40px;
-            height: 40px;
-            margin: 20px auto;
-            border: 3px solid rgba(255, 255, 255, 0.1);
-            border-top: 3px solid #cc0000;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-        }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+        .response-time {
+            color: #666;
+            font-size: 14px;
         }
 
         .result-item {
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-            padding: 25px 30px;
-            transition: all 0.3s ease;
-            cursor: pointer;
+            border: 1px solid #eee;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
         }
 
         .result-item:hover {
-            background: rgba(255, 255, 255, 0.05);
-            transform: translateX(5px);
-        }
-
-        .result-item:last-child {
-            border-bottom: none;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
         }
 
         .result-header {
             display: flex;
             justify-content: space-between;
             align-items: flex-start;
-            margin-bottom: 15px;
-            gap: 15px;
+            margin-bottom: 10px;
         }
 
         .result-title {
-            font-size: 1.3rem;
+            font-size: 18px;
             font-weight: 600;
-            color: #ff6666;
+            color: #CC0000;
             margin-bottom: 5px;
-            line-height: 1.3;
+            cursor: pointer;
+            transition: color 0.2s ease;
+            text-decoration: none;
+            display: inline-block;
+            tabindex: 0;
         }
 
-        .result-source {
-            font-size: 0.9rem;
-            color: #999;
-            background: rgba(255, 255, 255, 0.1);
-            padding: 4px 8px;
-            border-radius: 4px;
-            white-space: nowrap;
+        .result-title:hover {
+            color: #A30000;
+            text-decoration: underline;
         }
 
-        .result-content {
-            color: #d0d0d0;
-            font-size: 1rem;
-            line-height: 1.6;
-            margin-bottom: 15px;
+        .result-title:focus {
+            outline: 2px solid #CC0000;
+            outline-offset: 2px;
         }
 
-        .result-metadata {
-            display: flex;
-            gap: 20px;
-            flex-wrap: wrap;
-            align-items: center;
+        .result-title.clickable {
+            color: #CC0000;
         }
 
-        .confidence-score {
-            background: linear-gradient(135deg, #cc0000 0%, #a30000 100%);
+        .result-title.clickable:hover {
+            color: #A30000;
+        }
+
+        /* PDF icon for visual indication */
+        .pdf-icon {
+            margin-right: 8px;
+            color: #dc3545;
+            font-size: 14px;
+        }
+
+        /* Loading indicator for PDF opening */
+        .pdf-loading {
+            opacity: 0.6;
+            cursor: wait;
+        }
+
+        /* Error styling */
+        .pdf-error {
+            color: #dc3545 !important;
+            cursor: not-allowed;
+        }
+
+        .result-confidence {
+            background: linear-gradient(135deg, #CC0000 0%, #8B0000 100%);
             color: white;
             padding: 4px 12px;
             border-radius: 20px;
-            font-size: 0.85rem;
+            font-size: 12px;
             font-weight: 600;
+        }
+
+        .result-meta {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 10px;
+            font-size: 14px;
+            color: #666;
+            flex-wrap: wrap;
+        }
+
+        .result-meta span {
+            background: #f5f5f5;
+            padding: 2px 8px;
+            border-radius: 4px;
+        }
+
+        .result-meta .pdf-status {
+            background: #e8f5e8;
+            color: #2e7d32;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .result-meta .pdf-status.unavailable {
+            background: #ffebee;
+            color: #c62828;
+        }
+
+        .result-content {
+            color: #555;
+            line-height: 1.6;
+            margin-bottom: 10px;
         }
 
         .result-tags {
             display: flex;
-            gap: 8px;
+            gap: 5px;
             flex-wrap: wrap;
         }
 
         .tag {
-            background: rgba(255, 255, 255, 0.1);
-            color: #ccc;
-            padding: 3px 8px;
+            background: #FEE;
+            color: #CC0000;
+            padding: 2px 8px;
             border-radius: 12px;
-            font-size: 0.8rem;
-            border: 1px solid rgba(255, 255, 255, 0.2);
+            font-size: 12px;
         }
 
-        .no-results {
+        .loading {
             text-align: center;
-            padding: 60px 30px;
-            color: #999;
+            padding: 40px;
+            color: #CC0000;
+            font-size: 18px;
         }
 
-        .no-results h3 {
-            color: #ccc;
-            margin-bottom: 10px;
-            font-size: 1.4rem;
+        .error {
+            background: #ffebee;
+            color: #c62828;
+            padding: 15px;
+            border-radius: 10px;
+            margin: 20px 0;
+            border-left: 4px solid #c62828;
         }
 
-        .suggestions {
-            margin-top: 20px;
-            text-align: left;
-            max-width: 600px;
-            margin-left: auto;
-            margin-right: auto;
-        }
-
-        .suggestions h4 {
-            color: #ff6666;
-            margin-bottom: 10px;
-        }
-
-        .suggestions ul {
-            list-style: none;
-            padding-left: 0;
-        }
-
-        .suggestions li {
-            padding: 5px 0;
-            color: #ccc;
-        }
-
-        .suggestions li::before {
-            content: "→ ";
-            color: #cc0000;
-            font-weight: bold;
+        .upload-section {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            margin-bottom: 30px;
         }
 
         .stats-section {
-            background: rgba(255, 255, 255, 0.03);
-            border: 1px solid rgba(255, 255, 255, 0.1);
+            background: white;
             border-radius: 15px;
-            padding: 20px;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
             margin-bottom: 30px;
         }
 
         .stats-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
             gap: 20px;
+            margin-bottom: 20px;
         }
 
-        .stat-item {
-            text-align: center;
-            padding: 20px;
-            background: rgba(255, 255, 255, 0.05);
+        .stat-card {
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            border: 1px solid #dee2e6;
             border-radius: 10px;
+            padding: 20px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+
+        .stat-icon {
+            font-size: 2em;
+            width: 60px;
+            height: 60px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, #CC0000 0%, #8B0000 100%);
+            color: white;
+            border-radius: 50%;
+            box-shadow: 0 4px 10px rgba(204, 0, 0, 0.3);
+        }
+
+        .stat-content {
+            flex: 1;
         }
 
         .stat-number {
-            font-size: 2rem;
-            font-weight: bold;
-            color: #ff6666;
-            margin-bottom: 5px;
+            font-size: 2em;
+            font-weight: 700;
+            color: #CC0000;
+            line-height: 1;
         }
 
         .stat-label {
-            color: #ccc;
-            font-size: 0.9rem;
+            color: #666;
+            font-size: 14px;
+            font-weight: 500;
+            margin-top: 5px;
         }
 
-        .expand-btn {
-            background: none;
-            border: 1px solid rgba(255, 255, 255, 0.3);
-            color: #ccc;
-            padding: 8px 16px;
-            border-radius: 6px;
+        .stats-details {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+
+        .gpu-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        .gpu-indicator {
+            font-size: 16px;
+        }
+
+        .gpu-indicator.active {
+            color: #2E7D32;
+        }
+
+        .gpu-indicator.inactive {
+            color: #666;
+        }
+
+        .last-updated {
+            color: #666;
+            font-size: 12px;
+            font-style: italic;
+        }
+
+        .upload-area {
+            border: 2px dashed #ddd;
+            border-radius: 10px;
+            padding: 30px;
+            text-align: center;
+            transition: border-color 0.3s ease;
+        }
+
+        .upload-area:hover {
+            border-color: #CC0000;
+        }
+
+        .file-input {
+            display: none;
+        }
+
+        .upload-btn {
+            background: #4caf50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
             cursor: pointer;
-            font-size: 0.9rem;
-            transition: all 0.3s ease;
             margin-top: 10px;
         }
 
-        .expand-btn:hover {
-            border-color: #cc0000;
-            color: #ff6666;
+        /* Context menu styles */
+        .pdf-context-menu {
+            position: fixed;
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            z-index: 10001;
+            padding: 8px 0;
+            min-width: 180px;
         }
 
-        .expanded-content {
-            display: none;
-            margin-top: 15px;
-            padding-top: 15px;
-            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        .pdf-context-menu div {
+            padding: 8px 16px;
+            cursor: pointer;
+            transition: background-color 0.2s;
         }
 
-        .expanded-content.show {
-            display: block;
+        .pdf-context-menu div:hover {
+            background-color: #f5f5f5;
+        }
+
+        /* Notification styles */
+        .notification {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 12px 24px;
+            border-radius: 6px;
+            color: white;
+            font-weight: 500;
+            z-index: 10000;
+            transition: all 0.3s ease;
+            max-width: 400px;
+        }
+
+        .notification-success {
+            background-color: #2E7D32;
+        }
+
+        .notification-error {
+            background-color: #D32F2F;
+        }
+
+        .notification-info {
+            background-color: #CC0000;
+        }
+
+        /* PDF preview modal */
+        .pdf-preview-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.8);
+            z-index: 10002;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .pdf-preview-modal .modal-content {
+            background: white;
+            width: 90%;
+            height: 90%;
+            max-width: 1200px;
+            border-radius: 8px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .pdf-preview-modal .close-button {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: #CC0000;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            cursor: pointer;
+            z-index: 1;
+        }
+
+        .pdf-preview-modal iframe {
+            width: 100%;
+            height: 100%;
+            border: none;
         }
 
         @media (max-width: 768px) {
             .container {
-                padding: 15px;
+                padding: 10px;
             }
-            
-            .header h1 {
-                font-size: 2rem;
+
+            .search-options {
+                grid-template-columns: 1fr;
             }
-            
-            .search-form {
-                flex-direction: column;
-            }
-            
-            .search-input {
-                min-width: auto;
-            }
-            
-            .filters {
-                flex-direction: column;
-                align-items: stretch;
-            }
-            
+
             .result-header {
                 flex-direction: column;
-                align-items: flex-start;
+                gap: 10px;
             }
-            
-            .results-header {
+
+            .result-meta {
                 flex-direction: column;
-                align-items: stretch;
+                gap: 5px;
+            }
+
+            .stats-grid {
+                grid-template-columns: 1fr;
+                gap: 15px;
+            }
+
+            .stat-card {
+                padding: 15px;
+            }
+
+            .stat-icon {
+                width: 50px;
+                height: 50px;
+                font-size: 1.5em;
+            }
+
+            .stat-number {
+                font-size: 1.5em;
+            }
+
+            .stats-details {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 10px;
             }
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <header class="header">
-            <h1>🎩 Red Hat Documentation Assistant</h1>
-            <p>Intelligent search through Red Hat system administration documentation</p>
-        </header>
+        <div class="header">
+            <h1>🔍 Red Hat Documentation Search</h1>
+            <p>Intelligent search powered by GPU-accelerated AI • Built for Red Hat Enterprise Linux</p>
+        </div>
 
-        <div class="stats-section" id="statsSection" style="display: none;">
-            <div class="stats-grid">
-                <div class="stat-item">
-                    <div class="stat-number" id="totalDocs">0</div>
-                    <div class="stat-label">Documents Indexed</div>
+        <div class="upload-section">
+            <h2 style="margin-bottom: 20px; color: #333;">📄 Upload Documents</h2>
+            <div class="upload-area" onclick="document.getElementById('fileInput').click()">
+                <p>Click here to upload PDF documents</p>
+                <input type="file" id="fileInput" class="file-input" accept=".pdf" multiple>
+                <button class="upload-btn" onclick="uploadFiles()">Upload Selected Files</button>
+            </div>
+            <div id="uploadStatus"></div>
+        </div>
+
+        <div class="stats-section">
+            <h2 style="margin-bottom: 20px; color: #333;">📊 System Statistics</h2>
+            <div class="stats-grid" id="statsGrid">
+                <div class="stat-card">
+                    <div class="stat-icon">📚</div>
+                    <div class="stat-content">
+                        <div class="stat-number" id="totalDocs">-</div>
+                        <div class="stat-label">Documents Processed</div>
+                    </div>
                 </div>
-                <div class="stat-item">
-                    <div class="stat-number" id="totalQueries">0</div>
-                    <div class="stat-label">Total Queries</div>
+                <div class="stat-card">
+                    <div class="stat-icon">🔍</div>
+                    <div class="stat-content">
+                        <div class="stat-number" id="totalChunks">-</div>
+                        <div class="stat-label">Text Chunks</div>
+                    </div>
                 </div>
-                <div class="stat-item">
-                    <div class="stat-number" id="avgResponseTime">0ms</div>
-                    <div class="stat-label">Avg Response Time</div>
+                <div class="stat-card">
+                    <div class="stat-icon">⚡</div>
+                    <div class="stat-content">
+                        <div class="stat-number" id="totalQueries">-</div>
+                        <div class="stat-label">Searches Performed</div>
+                    </div>
                 </div>
-                <div class="stat-item">
-                    <div class="stat-number" id="systemStatus">🟢</div>
-                    <div class="stat-label">System Status</div>
+                <div class="stat-card">
+                    <div class="stat-icon">🎯</div>
+                    <div class="stat-content">
+                        <div class="stat-number" id="avgResponseTime">-</div>
+                        <div class="stat-label">Avg Response Time</div>
+                    </div>
                 </div>
+            </div>
+            <div class="stats-details" id="statsDetails">
+                <div class="gpu-status" id="gpuStatus">
+                    <span class="gpu-indicator" id="gpuIndicator">🔄</span>
+                    <span id="gpuText">Checking GPU status...</span>
+                </div>
+                <div class="last-updated" id="lastUpdated">Last updated: Loading...</div>
             </div>
         </div>
 
         <div class="search-section">
-            <form class="search-form" id="searchForm">
-                <input 
-                    type="text" 
-                    class="search-input" 
-                    id="searchInput" 
-                    placeholder="Ask about Red Hat system administration..."
-                    autocomplete="off"
-                />
+            <h2 style="margin-bottom: 20px; color: #333;">🔍 Search Documentation</h2>
+            <form class="search-form" onsubmit="performSearch(event)">
+                <input
+                    type="text"
+                    id="searchQuery"
+                    class="search-input"
+                    placeholder="Enter your search query... (e.g., 'How to configure firewall on RHEL 9')"
+                    required
+                >
+
+                <div class="search-options">
+                    <div class="option-group">
+                        <label>Category:</label>
+                        <select id="categoryFilter">
+                            <option value="">All Categories</option>
+                            <option value="installation">Installation</option>
+                            <option value="networking">Networking</option>
+                            <option value="security">Security</option>
+                            <option value="storage">Storage</option>
+                            <option value="virtualization">Virtualization</option>
+                            <option value="containers">Containers</option>
+                            <option value="troubleshooting">Troubleshooting</option>
+                        </select>
+                    </div>
+
+                    <div class="option-group">
+                        <label>RHEL Version:</label>
+                        <select id="versionFilter">
+                            <option value="">All Versions</option>
+                            <option value="rhel10">RHEL 10</option>
+                            <option value="rhel9">RHEL 9</option>
+                            <option value="rhel8">RHEL 8</option>
+                        </select>
+                    </div>
+
+                    <div class="option-group">
+                        <label>Max Results:</label>
+                        <input type="number" id="maxResults" min="1" max="50" value="10">
+                    </div>
+
+                    <div class="option-group">
+                        <label>Min Confidence:</label>
+                        <input type="number" id="minConfidence" min="0" max="1" step="0.1" value="0.3">
+                    </div>
+                </div>
+
                 <button type="submit" class="search-btn" id="searchBtn">
-                    Search
+                    🔍 Search Documentation
                 </button>
             </form>
-            
-            <div class="filters">
-                <div class="filter-group">
-                    <label for="categoryFilter">Category</label>
-                    <select class="filter-select" id="categoryFilter">
-                        <option value="">All Categories</option>
-                        <option value="installation">Installation</option>
-                        <option value="networking">Networking</option>
-                        <option value="security">Security</option>
-                        <option value="storage">Storage</option>
-                        <option value="virtualization">Virtualization</option>
-                        <option value="containers">Containers</option>
-                        <option value="troubleshooting">Troubleshooting</option>
-                    </select>
-                </div>
-                
-                <div class="filter-group">
-                    <label for="versionFilter">RHEL Version</label>
-                    <select class="filter-select" id="versionFilter">
-                        <option value="">All Versions</option>
-                        <option value="">RHEL 10</option>
-                        <option value="rhel9">RHEL 9</option>
-                        <option value="rhel8">RHEL 8</option>
-                    </select>
-                </div>
-                
-                <div class="filter-group">
-                    <label for="confidenceFilter">Min Confidence</label>
-                    <select class="filter-select" id="confidenceFilter">
-                        <option value="0">Any</option>
-                        <option value="0.7">70%+</option>
-                        <option value="0.8">80%+</option>
-                        <option value="0.9">90%+</option>
-                    </select>
-                </div>
-                
-                <div class="filter-group">
-                    <label for="documentUpload">Upload PDF</label>
-                    <input type="file" id="documentUpload" accept=".pdf" style="display: none;" />
-                    <button type="button" class="search-btn" style="padding: 8px 16px; font-size: 0.9rem;" onclick="ragInterface.triggerFileUpload()">
-                        📄 Upload
-                    </button>
-                </div>
-            </div>
         </div>
 
-        <div class="results-section" id="resultsSection" style="display: none;">
+        <div class="results-section" id="resultsSection">
             <div class="results-header">
                 <div class="results-count" id="resultsCount">0 results found</div>
-                <div class="sort-options">
-                    <label for="sortSelect" style="color: #ccc; font-size: 0.9rem;">Sort by:</label>
-                    <select class="filter-select" id="sortSelect">
-                        <option value="relevance">Relevance</option>
-                        <option value="confidence">Confidence</option>
-                        <option value="date">Date</option>
-                        <option value="title">Title</option>
-                    </select>
-                </div>
+                <div class="response-time" id="responseTime"></div>
             </div>
-            
             <div id="resultsContainer"></div>
         </div>
     </div>
 
     <script>
-        class RedHatRAGInterface {
-            constructor() {
-                this.currentQuery = '';
-                this.currentResults = [];
-                this.queryCount = 0;
-                this.responseTimeHistory = [];
-                
-                this.initializeEventListeners();
-                this.loadStats();
-                
-                // Refresh stats every 30 seconds
-                setInterval(() => this.loadStats(), 30000);
-                
-                // Initialize file upload handling
-                this.initializeFileUpload();
-            }
-            
-            initializeFileUpload() {
-                const fileInput = document.getElementById('documentUpload');
-                fileInput.addEventListener('change', (e) => {
-                    if (e.target.files.length > 0) {
-                        this.uploadDocument(e.target.files[0]);
-                    }
-                });
-            }
-            
-            triggerFileUpload() {
-                document.getElementById('documentUpload').click();
-            }
-            
-            async uploadDocument(file) {
-                if (!file.name.toLowerCase().endsWith('.pdf')) {
-                    alert('Please select a PDF file.');
-                    return;
-                }
-                
-                const formData = new FormData();
-                formData.append('file', file);
-                
-                try {
-                    const uploadButton = document.querySelector('button[onclick="ragInterface.triggerFileUpload()"]');
-                    const originalText = uploadButton.textContent;
-                    uploadButton.textContent = '⏳ Uploading...';
-                    uploadButton.disabled = true;
-                    
-                    const response = await fetch('/api/documents/upload', {
-                        method: 'POST',
-                        body: formData
-                    });
-                    
-                    if (response.ok) {
-                        const result = await response.json();
-                        alert(`✅ Document uploaded successfully: ${file.name}`);
-                        
-                        // Refresh stats after upload
-                        await this.loadStats();
-                    } else {
-                        const error = await response.json();
-                        alert(`❌ Upload failed: ${error.detail}`);
-                    }
-                } catch (error) {
-                    console.error('Upload error:', error);
-                    alert(`❌ Upload failed: ${error.message}`);
-                } finally {
-                    const uploadButton = document.querySelector('button[onclick="ragInterface.triggerFileUpload()"]');
-                    uploadButton.textContent = '📄 Upload';
-                    uploadButton.disabled = false;
-                    
-                    // Clear the file input
-                    document.getElementById('documentUpload').value = '';
-                }
-            }
+        async function performSearch(event) {
+            event.preventDefault();
 
-            initializeEventListeners() {
-                const searchForm = document.getElementById('searchForm');
-                const searchInput = document.getElementById('searchInput');
-                const sortSelect = document.getElementById('sortSelect');
-                const filters = document.querySelectorAll('.filter-select');
+            const query = document.getElementById('searchQuery').value;
+            const category = document.getElementById('categoryFilter').value;
+            const version = document.getElementById('versionFilter').value;
+            const maxResults = parseInt(document.getElementById('maxResults').value);
+            const minConfidence = parseFloat(document.getElementById('minConfidence').value);
 
-                searchForm.addEventListener('submit', (e) => {
-                    e.preventDefault();
-                    this.performSearch();
-                });
+            const searchBtn = document.getElementById('searchBtn');
+            const resultsSection = document.getElementById('resultsSection');
+            const resultsContainer = document.getElementById('resultsContainer');
 
-                searchInput.addEventListener('input', (e) => {
-                    // Add debounced auto-search if desired
-                    // this.debounceSearch(e.target.value);
-                });
+            // Show loading state
+            searchBtn.disabled = true;
+            searchBtn.innerHTML = '⏳ Searching...';
+            resultsSection.style.display = 'block';
+            resultsContainer.innerHTML = '<div class="loading">🔍 Searching through documentation...</div>';
 
-                sortSelect.addEventListener('change', () => {
-                    this.sortResults();
-                });
-
-                filters.forEach(filter => {
-                    filter.addEventListener('change', () => {
-                        if (this.currentResults.length > 0) {
-                            this.filterResults();
-                        }
-                    });
-                });
-
-                // Add keyboard shortcuts
-                document.addEventListener('keydown', (e) => {
-                    if (e.ctrlKey && e.key === '/') {
-                        e.preventDefault();
-                        searchInput.focus();
-                    }
-                });
-            }
-
-            async performSearch() {
-                const query = document.getElementById('searchInput').value.trim();
-                if (!query) return;
-
-                this.currentQuery = query;
-                const startTime = Date.now();
-                
-                this.showLoading();
-                this.incrementQueryCount();
-
-                try {
-                    // Call the real backend API
-                    const results = await this.performAPICall(query);
-                    
-                    const responseTime = Date.now() - startTime;
-                    this.updateResponseTime(responseTime);
-                    
-                    this.currentResults = results;
-                    this.displayResults(results);
-                } catch (error) {
-                    console.error('Search error:', error);
-                    this.showError('Search failed. Please try again.');
-                }
-            }
-
-            async performAPICall(query) {
-                const filters = {
-                    category: document.getElementById('categoryFilter').value || undefined,
-                    version: document.getElementById('versionFilter').value || undefined,
-                    min_confidence: parseFloat(document.getElementById('confidenceFilter').value) || 0.3
-                };
-
-                // Remove undefined values
-                Object.keys(filters).forEach(key => {
-                    if (filters[key] === undefined) {
-                        delete filters[key];
-                    }
-                });
-
-                const requestData = {
-                    query: query,
-                    filters: filters,
-                    max_results: 20,
-                    min_confidence: filters.min_confidence || 0.3
-                };
+            try {
+                const filters = {};
+                if (category) filters.category = category;
+                if (version) filters.version = version;
 
                 const response = await fetch('/api/search', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify(requestData)
+                    body: JSON.stringify({
+                        query: query,
+                        filters: filters,
+                        max_results: maxResults,
+                        min_confidence: minConfidence
+                    })
                 });
 
                 if (!response.ok) {
@@ -683,235 +715,448 @@
                 }
 
                 const data = await response.json();
-                
-                // Update response time in stats
-                this.updateResponseTime(data.response_time_ms);
-                
-                return data.results;
-            }
+                displayResults(data);
 
-            showLoading() {
-                const resultsSection = document.getElementById('resultsSection');
-                const resultsContainer = document.getElementById('resultsContainer');
-                
-                resultsSection.style.display = 'block';
-                resultsContainer.innerHTML = '<div class="loading">Searching documentation...</div>';
-            }
+                // Refresh statistics to update query count
+                setTimeout(loadStatistics, 500);
 
-            showError(message) {
-                const resultsContainer = document.getElementById('resultsContainer');
-                resultsContainer.innerHTML = `
-                    <div class="no-results">
-                        <h3>Search Error</h3>
-                        <p>${message}</p>
-                    </div>
-                `;
-            }
-
-            displayResults(results) {
-                const resultsContainer = document.getElementById('resultsContainer');
-                const resultsCount = document.getElementById('resultsCount');
-                
-                if (results.length === 0) {
-                    resultsContainer.innerHTML = this.generateNoResultsHTML();
-                    resultsCount.textContent = 'No results found';
-                    return;
-                }
-
-                resultsCount.textContent = `${results.length} result${results.length !== 1 ? 's' : ''} found`;
-                resultsContainer.innerHTML = results.map(result => this.generateResultHTML(result)).join('');
-
-                // Add expand/collapse functionality
-                this.initializeExpandButtons();
-            }
-
-            generateResultHTML(result) {
-                const confidencePercent = Math.round(result.confidence * 100);
-                const confidenceClass = confidencePercent >= 90 ? 'high' : confidencePercent >= 70 ? 'medium' : 'low';
-                
-                return `
-                    <div class="result-item" data-id="${result.id}">
-                        <div class="result-header">
-                            <div>
-                                <div class="result-title">${this.highlightQuery(result.title)}</div>
-                                <div class="result-source">📄 ${result.source} • Page ${result.page}</div>
-                            </div>
-                            <div class="confidence-score ${confidenceClass}">${confidencePercent}%</div>
-                        </div>
-                        
-                        <div class="result-content">
-                            ${this.highlightQuery(result.content)}
-                        </div>
-                        
-                        <div class="result-metadata">
-                            <div class="result-tags">
-                                ${result.tags.map(tag => `<span class="tag">${tag}</span>`).join('')}
-                            </div>
-                            <button class="expand-btn" onclick="ragInterface.toggleExpanded('${result.id}')">
-                                Show Details
-                            </button>
-                        </div>
-                        
-                        <div class="expanded-content" id="expanded-${result.id}">
-                            <p><strong>Section:</strong> ${result.section}</p>
-                            <p><strong>Category:</strong> ${result.category}</p>
-                            <p><strong>Version:</strong> ${result.version.toUpperCase()}</p>
-                            <p><strong>Confidence Score:</strong> ${confidencePercent}% match</p>
-                            <button class="expand-btn" onclick="ragInterface.viewFullDocument('${result.id}')">
-                                View Full Document
-                            </button>
-                        </div>
-                    </div>
-                `;
-            }
-
-            generateNoResultsHTML() {
-                return `
-                    <div class="no-results">
-                        <h3>No results found</h3>
-                        <p>Try adjusting your search terms or filters</p>
-                        
-                        <div class="suggestions">
-                            <h4>Search suggestions:</h4>
-                            <ul>
-                                <li>Use specific technical terms (e.g., "systemctl", "firewalld", "selinux")</li>
-                                <li>Include version numbers (e.g., "RHEL 9", "Python 3.12")</li>
-                                <li>Try broader categories (e.g., "networking", "storage", "security")</li>
-                                <li>Check for typos in command names or configuration files</li>
-                            </ul>
-                        </div>
-                    </div>
-                `;
-            }
-
-            highlightQuery(text) {
-                if (!this.currentQuery) return text;
-                
-                const regex = new RegExp(`(${this.currentQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-                return text.replace(regex, '<mark style="background: rgba(255, 102, 102, 0.3); color: #fff;">$1</mark>');
-            }
-
-            toggleExpanded(resultId) {
-                const expandedContent = document.getElementById(`expanded-${resultId}`);
-                const button = expandedContent.previousElementSibling.querySelector('.expand-btn');
-                
-                if (expandedContent.classList.contains('show')) {
-                    expandedContent.classList.remove('show');
-                    button.textContent = 'Show Details';
-                } else {
-                    expandedContent.classList.add('show');
-                    button.textContent = 'Hide Details';
-                }
-            }
-
-            viewFullDocument(resultId) {
-                const result = this.currentResults.find(r => r.id === resultId);
-                if (result) {
-                    // Open the document from the backend
-                    const documentUrl = `/api/documents/${encodeURIComponent(result.source)}`;
-                    window.open(documentUrl, '_blank');
-                }
-            }
-
-            initializeExpandButtons() {
-                // Already handled in the HTML generation
-            }
-
-            sortResults() {
-                const sortBy = document.getElementById('sortSelect').value;
-                
-                this.currentResults.sort((a, b) => {
-                    switch (sortBy) {
-                        case 'confidence':
-                            return b.confidence - a.confidence;
-                        case 'title':
-                            return a.title.localeCompare(b.title);
-                        case 'date':
-                            // Would need date field in real implementation
-                            return 0;
-                        case 'relevance':
-                        default:
-                            return b.confidence - a.confidence; // Default to confidence for now
-                    }
-                });
-                
-                this.displayResults(this.currentResults);
-            }
-
-            filterResults() {
-                const category = document.getElementById('categoryFilter').value;
-                const version = document.getElementById('versionFilter').value;
-                const minConfidence = parseFloat(document.getElementById('confidenceFilter').value);
-                
-                let filtered = this.currentResults.filter(result => {
-                    if (category && result.category !== category) return false;
-                    if (version && result.version !== version) return false;
-                    if (minConfidence && result.confidence < minConfidence) return false;
-                    return true;
-                });
-                
-                this.displayResults(filtered);
-            }
-
-            incrementQueryCount() {
-                this.queryCount++;
-                document.getElementById('totalQueries').textContent = this.queryCount;
-            }
-
-            updateResponseTime(time) {
-                this.responseTimeHistory.push(time);
-                if (this.responseTimeHistory.length > 10) {
-                    this.responseTimeHistory.shift();
-                }
-                
-                const avgTime = Math.round(
-                    this.responseTimeHistory.reduce((a, b) => a + b, 0) / this.responseTimeHistory.length
-                );
-                
-                document.getElementById('avgResponseTime').textContent = `${avgTime}ms`;
-            }
-
-            async loadStats() {
-                // Show stats section and load real data from backend
-                document.getElementById('statsSection').style.display = 'block';
-                
-                try {
-                    const response = await fetch('/api/stats');
-                    if (response.ok) {
-                        const stats = await response.json();
-                        document.getElementById('totalDocs').textContent = stats.total_documents || 0;
-                        document.getElementById('totalQueries').textContent = stats.total_queries || 0;
-                        document.getElementById('avgResponseTime').textContent = `${stats.avg_response_time_ms || 0}ms`;
-                        document.getElementById('systemStatus').textContent = '🟢';
-                    } else {
-                        // Fallback to default values if API fails
-                        this.setDefaultStats();
-                    }
-                } catch (error) {
-                    console.error('Failed to load stats:', error);
-                    this.setDefaultStats();
-                }
-            }
-            
-            setDefaultStats() {
-                document.getElementById('totalDocs').textContent = '0';
-                document.getElementById('totalQueries').textContent = this.queryCount;
-                document.getElementById('avgResponseTime').textContent = '0ms';
-                document.getElementById('systemStatus').textContent = '🔄';
+            } catch (error) {
+                resultsContainer.innerHTML = `<div class="error">❌ Error: ${error.message}</div>`;
+            } finally {
+                searchBtn.disabled = false;
+                searchBtn.innerHTML = '🔍 Search Documentation';
             }
         }
 
-        // Initialize the interface
-        const ragInterface = new RedHatRAGInterface();
+        function displayResults(data) {
+            const resultsCount = document.getElementById('resultsCount');
+            const responseTime = document.getElementById('responseTime');
+            const resultsContainer = document.getElementById('resultsContainer');
 
-        // Example searches for testing
-        window.exampleSearches = [
-            "How to configure Podman containers",
-            "RHEL 9 installation troubleshooting",
-            "Setting up firewall rules",
-            "SELinux policy configuration",
-            "Network bonding configuration"
-        ];
+            resultsCount.textContent = `${data.total_count} results found`;
+            responseTime.textContent = `Response time: ${data.response_time_ms}ms`;
+
+            if (data.results.length === 0) {
+                resultsContainer.innerHTML = '<div class="loading">📭 No results found. Try adjusting your search terms or filters.</div>';
+                return;
+            }
+
+            const resultsHTML = data.results.map(result => `
+                <div class="result-item">
+                    <div class="result-header">
+                        <div>
+                            <div class="result-title clickable"
+                                 onclick="openPDF('${escapeHtml(result.source)}')"
+                                 title="Click to open PDF in new tab"
+                                 tabindex="0"
+                                 onkeydown="if(event.key==='Enter') this.click()">
+                                <span class="pdf-icon">📄</span>${escapeHtml(result.title)}
+                            </div>
+                            <div class="result-meta">
+                                <span>📄 ${escapeHtml(result.source)}</span>
+                                <span>📍 Page ${result.page}</span>
+                                <span>🏷️ ${escapeHtml(result.category)}</span>
+                                <span>🔧 ${escapeHtml(result.version)}</span>
+                            </div>
+                        </div>
+                        <div class="result-confidence">${Math.round(result.confidence * 100)}% match</div>
+                    </div>
+                    <div class="result-content">${escapeHtml(result.content.substring(0, 300))}${result.content.length > 300 ? '...' : ''}</div>
+                    ${result.tags.length > 0 ? `
+                        <div class="result-tags">
+                            ${result.tags.map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}
+                        </div>
+                    ` : ''}
+                </div>
+            `).join('');
+
+            resultsContainer.innerHTML = resultsHTML;
+
+            // Add PDF status indicators after rendering
+            setTimeout(addPDFStatusIndicators, 100);
+        }
+
+        // Function to open PDF in new tab
+        function openPDF(filename) {
+            if (!filename) {
+                showNotification('No filename provided', 'error');
+                return;
+            }
+
+            // Show loading state
+            const clickedElement = event.target.closest('.result-title');
+            if (clickedElement) {
+                clickedElement.classList.add('pdf-loading');
+                clickedElement.title = 'Opening PDF...';
+            }
+
+            // Construct the PDF URL
+            const pdfUrl = `/api/documents/${encodeURIComponent(filename)}`;
+
+            // Check if the PDF exists before opening
+            fetch(pdfUrl, { method: 'HEAD' })
+                .then(response => {
+                    if (response.ok) {
+                        // Open PDF in new tab
+                        const newWindow = window.open(pdfUrl, '_blank');
+
+                        // Check if popup was blocked
+                        if (!newWindow || newWindow.closed || typeof newWindow.closed == 'undefined') {
+                            showNotification('Popup blocked. Please allow popups for this site.', 'error');
+                            // Fallback: try direct navigation
+                            window.location.href = pdfUrl;
+                        } else {
+                            showNotification('PDF opened in new tab', 'success');
+                        }
+                    } else {
+                        throw new Error(`PDF not found: ${response.status}`);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error opening PDF:', error);
+                    showNotification(`Error opening PDF: ${error.message}`, 'error');
+
+                    // Mark the element as error
+                    if (clickedElement) {
+                        clickedElement.classList.add('pdf-error');
+                        clickedElement.title = 'PDF not available';
+                    }
+                })
+                .finally(() => {
+                    // Remove loading state
+                    if (clickedElement) {
+                        clickedElement.classList.remove('pdf-loading');
+                        if (!clickedElement.classList.contains('pdf-error')) {
+                            clickedElement.title = 'Click to open PDF in new tab';
+                        }
+                    }
+                });
+        }
+
+        // Utility function to show notifications
+        function showNotification(message, type = 'info') {
+            // Create notification element
+            const notification = document.createElement('div');
+            notification.className = `notification notification-${type}`;
+            notification.textContent = message;
+
+            // Add to page
+            document.body.appendChild(notification);
+
+            // Auto remove after 3 seconds
+            setTimeout(() => {
+                notification.style.opacity = '0';
+                notification.style.transform = 'translateX(100%)';
+                setTimeout(() => {
+                    if (notification.parentNode) {
+                        notification.parentNode.removeChild(notification);
+                    }
+                }, 300);
+            }, 3000);
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        async function uploadFiles() {
+            const fileInput = document.getElementById('fileInput');
+            const uploadStatus = document.getElementById('uploadStatus');
+
+            if (fileInput.files.length === 0) {
+                uploadStatus.innerHTML = '<div class="error">Please select files first</div>';
+                return;
+            }
+
+            uploadStatus.innerHTML = '<div class="loading">⬆️ Uploading files...</div>';
+            let successCount = 0;
+
+            for (const file of fileInput.files) {
+                if (!file.name.toLowerCase().endsWith('.pdf')) {
+                    uploadStatus.innerHTML += `<div class="error">❌ ${file.name} is not a PDF file</div>`;
+                    continue;
+                }
+
+                try {
+                    const formData = new FormData();
+                    formData.append('file', file);
+
+                    const response = await fetch('/api/documents/upload', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    if (response.ok) {
+                        uploadStatus.innerHTML += `<div style="color: green; margin: 5px 0;">✅ ${file.name} uploaded successfully</div>`;
+                        successCount++;
+                    } else {
+                        const error = await response.text();
+                        uploadStatus.innerHTML += `<div class="error">❌ Failed to upload ${file.name}: ${error}</div>`;
+                    }
+                } catch (error) {
+                    uploadStatus.innerHTML += `<div class="error">❌ Error uploading ${file.name}: ${error.message}</div>`;
+                }
+            }
+
+            fileInput.value = '';
+
+            // Refresh statistics if any files were successfully uploaded
+            if (successCount > 0) {
+                setTimeout(() => {
+                    loadStatistics();
+                    showNotification(`${successCount} document${successCount > 1 ? 's' : ''} processed. Statistics updated.`, 'success');
+                }, 2000); // Wait 2 seconds for processing to complete
+            }
+        }
+
+        // Function to check PDF availability and add status indicators
+        async function checkPDFAvailability(filename) {
+            try {
+                const response = await fetch(`/api/documents/${encodeURIComponent(filename)}`, { method: 'HEAD' });
+                return response.ok;
+            } catch {
+                return false;
+            }
+        }
+
+        // Add PDF status indicators
+        function addPDFStatusIndicators() {
+            document.querySelectorAll('.result-item').forEach(async (item) => {
+                const titleElement = item.querySelector('.result-title');
+                const metaElement = item.querySelector('.result-meta');
+
+                if (titleElement && metaElement) {
+                    const onclickAttr = titleElement.getAttribute('onclick');
+                    if (onclickAttr) {
+                        const match = onclickAttr.match(/'([^']+)'/);
+                        if (match) {
+                            const filename = match[1];
+                            const isAvailable = await checkPDFAvailability(filename);
+
+                            const statusSpan = document.createElement('span');
+                            statusSpan.className = `pdf-status ${isAvailable ? 'available' : 'unavailable'}`;
+                            statusSpan.textContent = isAvailable ? '✓ PDF Available' : '✗ PDF Unavailable';
+
+                            metaElement.appendChild(statusSpan);
+
+                            if (!isAvailable) {
+                                titleElement.classList.add('pdf-error');
+                                titleElement.style.cursor = 'not-allowed';
+                                titleElement.onclick = null;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Add right-click context menu for PDFs
+        document.addEventListener('contextmenu', function(event) {
+            if (event.target.closest('.result-title.clickable')) {
+                event.preventDefault();
+
+                const titleElement = event.target.closest('.result-title');
+                const onclickAttr = titleElement.getAttribute('onclick');
+                if (onclickAttr) {
+                    const match = onclickAttr.match(/'([^']+)'/);
+                    if (match) {
+                        const filename = match[1];
+                        showPDFContextMenu(event.pageX, event.pageY, filename);
+                    }
+                }
+            }
+        });
+
+        function showPDFContextMenu(x, y, filename) {
+            // Remove existing context menu
+            const existingMenu = document.querySelector('.pdf-context-menu');
+            if (existingMenu) {
+                existingMenu.remove();
+            }
+
+            const menu = document.createElement('div');
+            menu.className = 'pdf-context-menu';
+            menu.style.left = x + 'px';
+            menu.style.top = y + 'px';
+
+            const menuItems = [
+                { text: '📖 Open in new tab', action: () => openPDF(filename) },
+                { text: '⬇️ Download PDF', action: () => downloadPDF(filename) },
+                { text: '🔗 Copy link', action: () => copyPDFLink(filename) }
+            ];
+
+            menuItems.forEach(item => {
+                const menuItem = document.createElement('div');
+                menuItem.textContent = item.text;
+                menuItem.onclick = () => {
+                    item.action();
+                    menu.remove();
+                };
+                menu.appendChild(menuItem);
+            });
+
+            document.body.appendChild(menu);
+
+            // Remove menu when clicking elsewhere
+            setTimeout(() => {
+                document.addEventListener('click', function removeMenu() {
+                    menu.remove();
+                    document.removeEventListener('click', removeMenu);
+                });
+            }, 100);
+        }
+
+        function downloadPDF(filename) {
+            const downloadUrl = `/api/documents/${encodeURIComponent(filename)}`;
+
+            // Create temporary download link
+            const link = document.createElement('a');
+            link.href = downloadUrl;
+            link.download = filename;
+            link.style.display = 'none';
+
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+
+            showNotification(`Downloading ${filename}`, 'info');
+        }
+
+        function copyPDFLink(filename) {
+            const fullUrl = `${window.location.origin}/api/documents/${encodeURIComponent(filename)}`;
+
+            if (navigator.clipboard) {
+                navigator.clipboard.writeText(fullUrl).then(() => {
+                    showNotification('PDF link copied to clipboard', 'success');
+                }).catch(() => {
+                    fallbackCopyToClipboard(fullUrl);
+                });
+            } else {
+                fallbackCopyToClipboard(fullUrl);
+            }
+        }
+
+        function fallbackCopyToClipboard(text) {
+            const textArea = document.createElement('textarea');
+            textArea.value = text;
+            textArea.style.position = 'fixed';
+            textArea.style.opacity = '0';
+            document.body.appendChild(textArea);
+            textArea.select();
+
+            try {
+                document.execCommand('copy');
+                showNotification('PDF link copied to clipboard', 'success');
+            } catch (err) {
+                showNotification('Could not copy link', 'error');
+            }
+
+            document.body.removeChild(textArea);
+        }
+
+        // Add some example searches on page load
+        window.addEventListener('load', function() {
+            const examples = [
+                'How to configure firewall rules in RHEL 9',
+                'Setting up SELinux policies',
+                'Podman container management',
+                'Network configuration with NetworkManager',
+                'LVM storage management'
+            ];
+
+            const searchInput = document.getElementById('searchQuery');
+            let exampleIndex = 0;
+
+            searchInput.addEventListener('focus', function() {
+                if (this.value === '') {
+                    this.placeholder = examples[exampleIndex % examples.length];
+                    exampleIndex++;
+                }
+            });
+
+            // Load initial statistics
+            loadStatistics();
+
+            // Refresh statistics every 30 seconds
+            setInterval(loadStatistics, 30000);
+        });
+
+        // Function to load and display system statistics
+        async function loadStatistics() {
+            try {
+                const response = await fetch('/api/stats');
+                if (!response.ok) {
+                    throw new Error('Failed to fetch statistics');
+                }
+
+                const stats = await response.json();
+                updateStatisticsDisplay(stats);
+
+            } catch (error) {
+                console.error('Error loading statistics:', error);
+                // Show placeholder values on error
+                updateStatisticsDisplay({
+                    total_documents: '?',
+                    total_chunks: '?',
+                    total_queries: '?',
+                    avg_response_time_ms: '?',
+                    gpu_enabled: false,
+                    gpu_info: null,
+                    last_updated: new Date().toISOString()
+                });
+            }
+        }
+
+        // Function to update the statistics display
+        function updateStatisticsDisplay(stats) {
+            // Update stat cards
+            document.getElementById('totalDocs').textContent = stats.total_documents || 0;
+            document.getElementById('totalChunks').textContent = formatNumber(stats.total_chunks || 0);
+            document.getElementById('totalQueries').textContent = formatNumber(stats.total_queries || 0);
+
+            // Format response time
+            const avgTime = stats.avg_response_time_ms || 0;
+            document.getElementById('avgResponseTime').textContent = avgTime > 0 ? `${avgTime}ms` : '-';
+
+            // Update GPU status
+            const gpuIndicator = document.getElementById('gpuIndicator');
+            const gpuText = document.getElementById('gpuText');
+
+            if (stats.gpu_enabled) {
+                gpuIndicator.textContent = '🟢';
+                gpuIndicator.className = 'gpu-indicator active';
+                gpuText.textContent = `GPU Active: ${stats.gpu_info || 'GPU Enabled'}`;
+                gpuText.style.color = '#2E7D32';
+            } else {
+                gpuIndicator.textContent = '🔴';
+                gpuIndicator.className = 'gpu-indicator inactive';
+                gpuText.textContent = 'CPU Mode (No GPU)';
+                gpuText.style.color = '#666';
+            }
+
+            // Update last updated timestamp
+            const lastUpdated = document.getElementById('lastUpdated');
+            if (stats.last_updated) {
+                const date = new Date(stats.last_updated);
+                lastUpdated.textContent = `Last updated: ${date.toLocaleString()}`;
+            } else {
+                lastUpdated.textContent = `Last updated: ${new Date().toLocaleString()}`;
+            }
+        }
+
+        // Helper function to format numbers with commas
+        function formatNumber(num) {
+            if (typeof num !== 'number') return num;
+            return num.toLocaleString();
+        }
+
+        // Function to refresh statistics manually (can be called after uploads)
+        function refreshStatistics() {
+            loadStatistics();
+            showNotification('Statistics refreshed', 'info');
+        }
     </script>
 </body>
 </html>
