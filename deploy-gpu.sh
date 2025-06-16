@@ -50,7 +50,7 @@ echo "🚀 Deploying container..."
 echo "Attempting to deploy with GPU access (Method 1: CDI all GPUs)..."
 if podman run -d \
   --name redhat-rag-gpu \
-  --publish 127.0.0.1:8080:8080 \
+  --publish 0.0.0.0:8080:8080 \
   --volume "$(pwd)/data/persistent/documents:/app/documents:Z" \
   --volume "$(pwd)/data/persistent/vectordb:/app/vectordb:Z" \
   --volume "$(pwd)/data/models:/app/models:Z" \
