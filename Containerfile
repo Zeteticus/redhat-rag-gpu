@@ -41,9 +41,7 @@ COPY .env .
 
 # Create static directory and copy frontend files
 RUN mkdir -p /app/static
-
-# Copy frontend to container
-COPY static/index.html /app/static/index.html
+COPY static/ ./static/
 
 # Install GPU-enabled PyTorch and dependencies
 RUN pip3 install --no-cache-dir --upgrade pip && \
@@ -67,6 +65,9 @@ RUN mkdir -p /app/documents /app/vectordb /app/models /app/logs /tmp/uploads && 
 # Ensure static directory has proper permissions
 RUN chmod -R 755 /app/static && \
     chown -R appuser:appuser /app/static
+
+# Create VOLUME declarations for persistent data
+VOLUME ["/app/vectordb", "/app/documents", "/app/models"]
 
 # Switch back to non-root user
 USER appuser

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass, asdict
 from contextlib import asynccontextmanager
+from fastapi import Request
 
 import uvicorn
 import PyPDF2
@@ -923,24 +924,83 @@ async def upload_document(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/documents/{filename}")
-async def get_document(filename: str):
-    """Retrieve a document file"""
-    # First try the main documents directory
-    file_path = Path(Config.DOCUMENTS_DIR) / filename
+@app.head("/api/documents/{filename}")
+async def get_document(filename: str, request: Request):
+    """Retrieve a document file for inline viewing in browser"""
+    try:
+        # Security: prevent directory traversal attacks
+        if ".." in filename or "/" in filename or "\\" in filename:
+            logger.warning(f"Invalid filename attempted: {filename}")
+            raise HTTPException(status_code=400, detail="Invalid filename")
 
-    if not file_path.exists():
-        # If not found, try the temporary uploads directory
-        temp_path = Path("/tmp/uploads") / filename
-        if temp_path.exists():
-            file_path = temp_path
-        else:
-            raise HTTPException(status_code=404, detail="Document not found")
+        # Log the request for debugging
+        logger.info(f"Document {request.method} request for: {filename}")
 
-    return FileResponse(
-        path=file_path,
-        media_type='application/pdf',
-        filename=filename
-    )
+        # First try the main documents directory
+        file_path = Path(Config.DOCUMENTS_DIR) / filename
+        logger.debug(f"Checking main documents path: {file_path}")
+
+        if not file_path.exists():
+            # If not found, try the temporary uploads directory
+            temp_path = Path("/tmp/uploads") / filename
+            logger.debug(f"Checking temp path: {temp_path}")
+            if temp_path.exists():
+                file_path = temp_path
+                logger.debug(f"Found in temp directory: {temp_path}")
+            else:
+                logger.error(f"Document not found: {filename}")
+
+                # List available files for debugging
+                docs_path = Path(Config.DOCUMENTS_DIR)
+                if docs_path.exists():
+                    available_files = list(docs_path.glob("*.pdf"))
+                    logger.debug(f"Available PDF files: {[f.name for f in available_files]}")
+
+                raise HTTPException(status_code=404, detail=f"Document '{filename}' not found")
+
+        # Verify it's actually a PDF file
+        if not filename.lower().endswith('.pdf'):
+            logger.warning(f"Non-PDF file requested: {filename}")
+            raise HTTPException(status_code=400, detail="Only PDF files are supported")
+
+        # Check file permissions
+        if not os.access(file_path, os.R_OK):
+            logger.error(f"Cannot read file: {file_path}")
+            raise HTTPException(status_code=403, detail="File access denied")
+
+        # For HEAD requests, just return success without file content
+        if request.method == "HEAD":
+            logger.info(f"HEAD request successful for: {filename}")
+            from fastapi import Response
+            return Response(
+                status_code=200,
+                headers={
+                    "Content-Type": "application/pdf",
+                    "Content-Length": str(file_path.stat().st_size),
+                    "Content-Disposition": f"inline; filename={filename}",
+                    "Cache-Control": "public, max-age=3600",
+                    "X-Content-Type-Options": "nosniff"
+                }
+            )
+
+        # For GET requests, return the actual file
+        logger.info(f"Serving PDF: {file_path} (size: {file_path.stat().st_size} bytes)")
+        return FileResponse(
+            path=str(file_path),
+            media_type='application/pdf',
+            filename=filename,
+            headers={
+                "Content-Disposition": f"inline; filename={filename}",
+                "Cache-Control": "public, max-age=3600",
+                "X-Content-Type-Options": "nosniff"
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error serving document {filename}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error serving document: {str(e)}")
 
 @app.get("/api/documents")
 async def list_documents():
