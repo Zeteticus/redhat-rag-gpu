@@ -71,23 +71,17 @@ RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel && \
 COPY main.py .
 COPY .env .
 
-# Create static directory and copy frontend files
+# Create static directory - this will be mounted or copied later
 RUN mkdir -p /app/static
-COPY static/ ./static/ 2>/dev/null || echo "No static directory found, skipping..."
 
 # Switch to root to set up directories
 USER 0
 
 # Create directories with proper permissions
-RUN mkdir -p /app/documents /app/vectordb /app/models /app/logs /tmp/uploads && \
+RUN mkdir -p /app/documents /app/vectordb /app/models /app/logs /tmp/uploads /app/static && \
     chmod -R 777 /app/documents /app/vectordb /app/models /app/logs /tmp/uploads && \
-    chown -R appuser:appuser /app/documents /app/vectordb /app/models /app/logs /tmp/uploads
-
-# Ensure static directory has proper permissions (if it exists)
-RUN if [ -d "/app/static" ]; then \
-        chmod -R 755 /app/static && \
-        chown -R appuser:appuser /app/static; \
-    fi
+    chmod -R 755 /app/static && \
+    chown -R appuser:appuser /app/documents /app/vectordb /app/models /app/logs /tmp/uploads /app/static
 
 # Create VOLUME declarations for persistent data
 VOLUME ["/app/vectordb", "/app/documents", "/app/models"]
