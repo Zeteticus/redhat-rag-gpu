@@ -1,8 +1,20 @@
 #!/usr/bin/env python3
 """
-Red Hat Documentation RAG Backend
+Red Hat Documentation RAG Backend - Multi-Format Support
 FastAPI-based backend for intelligent document search and retrieval
-Optimized for RHEL with GPU Acceleration
+Optimized for RHEL with GPU Acceleration and Multi-Format Document Processing
+
+Supported Formats:
+- PDF (PyMuPDF for better extraction)
+- DOCX (python-docx)
+- TXT (native text files)
+- XLSX/XLS (openpyxl, xlrd)
+- EPUB (ebooklib)
+- MOBI (python-kindle)
+- HTML (BeautifulSoup)
+- RTF (striprtf)
+- ODT (odfpy)
+- CSV (built-in csv module)
 """
 
 import os
@@ -13,15 +25,18 @@ import logging
 import hashlib
 import shutil
 import torch
+import mimetypes
+import zipfile
+import csv
+import io
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union, Tuple
 from dataclasses import dataclass, asdict
 from contextlib import asynccontextmanager
 from fastapi import Request
 
 import uvicorn
-import PyPDF2
 import numpy as np
 from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
@@ -30,6 +45,65 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
+
+# Multi-format document processing libraries
+try:
+    import fitz  # PyMuPDF - better PDF processing
+    PDF_AVAILABLE = True
+except ImportError:
+    import PyPDF2  # Fallback to PyPDF2
+    PDF_AVAILABLE = False
+    
+try:
+    from docx import Document as DocxDocument
+    DOCX_AVAILABLE = True
+except ImportError:
+    DOCX_AVAILABLE = False
+
+try:
+    import openpyxl
+    from openpyxl import load_workbook
+    XLSX_AVAILABLE = True
+except ImportError:
+    XLSX_AVAILABLE = False
+
+try:
+    import xlrd
+    XLS_AVAILABLE = True
+except ImportError:
+    XLS_AVAILABLE = False
+
+try:
+    import ebooklib
+    from ebooklib import epub
+    EPUB_AVAILABLE = True
+except ImportError:
+    EPUB_AVAILABLE = False
+
+try:
+    from bs4 import BeautifulSoup
+    HTML_AVAILABLE = True
+except ImportError:
+    HTML_AVAILABLE = False
+
+try:
+    from striprtf import rtf_to_text
+    RTF_AVAILABLE = True
+except ImportError:
+    RTF_AVAILABLE = False
+
+try:
+    from odf import text, teletype
+    from odf.opendocument import load
+    ODT_AVAILABLE = True
+except ImportError:
+    ODT_AVAILABLE = False
+
+try:
+    import kindle_unpack
+    MOBI_AVAILABLE = True
+except ImportError:
+    MOBI_AVAILABLE = False
 
 # Configure logging
 logging.basicConfig(
@@ -48,6 +122,24 @@ class Config:
     MAX_RESULTS = int(os.getenv('MAX_RESULTS', '20'))
     MIN_CONFIDENCE = float(os.getenv('MIN_CONFIDENCE', '0.3'))
     GPU_BATCH_SIZE = int(os.getenv('GPU_BATCH_SIZE', '32'))
+    MAX_FILE_SIZE = int(os.getenv('MAX_FILE_SIZE', '100')) * 1024 * 1024  # 100MB default
+
+    # Supported file extensions
+    SUPPORTED_EXTENSIONS = {
+        '.pdf': 'PDF Document',
+        '.docx': 'Microsoft Word Document',
+        '.doc': 'Microsoft Word Document (Legacy)',
+        '.txt': 'Plain Text',
+        '.xlsx': 'Microsoft Excel Spreadsheet',
+        '.xls': 'Microsoft Excel Spreadsheet (Legacy)',
+        '.epub': 'EPUB eBook',
+        '.mobi': 'MOBI eBook',
+        '.html': 'HTML Document',
+        '.htm': 'HTML Document',
+        '.rtf': 'Rich Text Format',
+        '.odt': 'OpenDocument Text',
+        '.csv': 'Comma-Separated Values'
+    }
 
     # Red Hat specific patterns
     RHEL_VERSION_PATTERN = r'(?:RHEL|Red Hat Enterprise Linux)\s*(\d+(?:\.\d+)?)'
@@ -79,6 +171,7 @@ class SearchResult(BaseModel):
     tags: List[str]
     page: int
     section: str
+    file_type: str
     metadata: Dict[str, Any]
 
 class SearchResponse(BaseModel):
@@ -97,8 +190,10 @@ class StatsResponse(BaseModel):
     last_updated: str
     categories: Dict[str, int]
     versions: Dict[str, int]
+    file_types: Dict[str, int]
     gpu_enabled: bool
     gpu_info: Optional[str] = None
+    supported_formats: Dict[str, bool]
 
 @dataclass
 class DocumentChunk:
@@ -112,8 +207,546 @@ class DocumentChunk:
     category: str
     version: str
     tags: List[str]
+    file_type: str
     metadata: Dict[str, Any]
     embedding: Optional[np.ndarray] = None
+
+class MultiFormatExtractor:
+    """Handles text extraction from multiple file formats"""
+    
+    def __init__(self):
+        self.supported_formats = {}
+        self._register_extractors()
+    
+    def _register_extractors(self):
+        """Register available extractors based on installed libraries"""
+        if PDF_AVAILABLE:
+            self.supported_formats['.pdf'] = self._extract_pdf_pymupdf
+        else:
+            self.supported_formats['.pdf'] = self._extract_pdf_pypdf2
+            
+        if DOCX_AVAILABLE:
+            self.supported_formats['.docx'] = self._extract_docx
+            
+        if XLSX_AVAILABLE:
+            self.supported_formats['.xlsx'] = self._extract_xlsx
+            
+        if XLS_AVAILABLE:
+            self.supported_formats['.xls'] = self._extract_xls
+            
+        if EPUB_AVAILABLE:
+            self.supported_formats['.epub'] = self._extract_epub
+            
+        if HTML_AVAILABLE:
+            self.supported_formats['.html'] = self._extract_html
+            self.supported_formats['.htm'] = self._extract_html
+            
+        if RTF_AVAILABLE:
+            self.supported_formats['.rtf'] = self._extract_rtf
+            
+        if ODT_AVAILABLE:
+            self.supported_formats['.odt'] = self._extract_odt
+            
+        if MOBI_AVAILABLE:
+            self.supported_formats['.mobi'] = self._extract_mobi
+        
+        # Always available formats
+        self.supported_formats['.txt'] = self._extract_txt
+        self.supported_formats['.csv'] = self._extract_csv
+        
+        logger.info(f"Registered extractors for: {list(self.supported_formats.keys())}")
+
+    def get_file_type(self, file_path: Path) -> str:
+        """Detect file type from extension and MIME type"""
+        extension = file_path.suffix.lower()
+        if extension in self.supported_formats:
+            return extension
+        
+        # Try MIME type detection
+        mime_type, _ = mimetypes.guess_type(str(file_path))
+        if mime_type:
+            mime_to_ext = {
+                'application/pdf': '.pdf',
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+                'application/vnd.ms-excel': '.xls',
+                'text/plain': '.txt',
+                'text/html': '.html',
+                'text/csv': '.csv',
+                'application/epub+zip': '.epub',
+                'application/rtf': '.rtf'
+            }
+            return mime_to_ext.get(mime_type, extension)
+        
+        return extension
+
+    def can_process(self, file_path: Path) -> bool:
+        """Check if file can be processed"""
+        file_type = self.get_file_type(file_path)
+        return file_type in self.supported_formats
+
+    def extract_text(self, file_path: Path) -> List[Dict[str, Any]]:
+        """Extract text from file based on its type"""
+        file_type = self.get_file_type(file_path)
+        
+        if file_type not in self.supported_formats:
+            raise ValueError(f"Unsupported file type: {file_type}")
+        
+        try:
+            extractor = self.supported_formats[file_type]
+            return extractor(file_path)
+        except Exception as e:
+            logger.error(f"Error extracting from {file_path}: {str(e)}")
+            # Try generic text extraction as fallback
+            return self._extract_text_fallback(file_path)
+
+    def _extract_pdf_pymupdf(self, file_path: Path) -> List[Dict[str, Any]]:
+        """Extract text from PDF using PyMuPDF (better than PyPDF2)"""
+        try:
+            doc = fitz.open(str(file_path))
+            pages = []
+            
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                text = page.get_text()
+                
+                if text.strip():
+                    # Extract additional metadata
+                    blocks = page.get_text("dict")
+                    images = page.get_images()
+                    
+                    pages.append({
+                        'page': page_num + 1,
+                        'text': text,
+                        'source': file_path.name,
+                        'metadata': {
+                            'image_count': len(images),
+                            'block_count': len(blocks.get('blocks', [])),
+                            'char_count': len(text)
+                        }
+                    })
+            
+            doc.close()
+            logger.info(f"Extracted {len(pages)} pages from PDF: {file_path.name}")
+            return pages
+            
+        except Exception as e:
+            logger.error(f"PyMuPDF extraction failed for {file_path}: {str(e)}")
+            return self._extract_pdf_pypdf2(file_path)
+
+    def _extract_pdf_pypdf2(self, file_path: Path) -> List[Dict[str, Any]]:
+        """Fallback PDF extraction using PyPDF2"""
+        try:
+            with open(file_path, 'rb') as file:
+                pdf_reader = PyPDF2.PdfReader(file)
+                pages = []
+                
+                for page_num, page in enumerate(pdf_reader.pages, 1):
+                    text = page.extract_text()
+                    if text.strip():
+                        pages.append({
+                            'page': page_num,
+                            'text': text,
+                            'source': file_path.name,
+                            'metadata': {'char_count': len(text)}
+                        })
+                
+                logger.info(f"Extracted {len(pages)} pages from PDF (PyPDF2): {file_path.name}")
+                return pages
+                
+        except Exception as e:
+            logger.error(f"PyPDF2 extraction failed for {file_path}: {str(e)}")
+            return []
+
+    def _extract_docx(self, file_path: Path) -> List[Dict[str, Any]]:
+        """Extract text from DOCX files"""
+        try:
+            doc = DocxDocument(str(file_path))
+            paragraphs = []
+            page_num = 1
+            current_section = "Document"
+            
+            full_text = []
+            for paragraph in doc.paragraphs:
+                if paragraph.text.strip():
+                    full_text.append(paragraph.text)
+            
+            # Group paragraphs into logical pages (every ~500 words)
+            words_per_page = 500
+            current_words = 0
+            current_page_text = []
+            
+            for para_text in full_text:
+                word_count = len(para_text.split())
+                
+                if current_words + word_count > words_per_page and current_page_text:
+                    # Save current page
+                    paragraphs.append({
+                        'page': page_num,
+                        'text': '\n'.join(current_page_text),
+                        'source': file_path.name,
+                        'section': current_section,
+                        'metadata': {
+                            'word_count': current_words,
+                            'paragraph_count': len(current_page_text)
+                        }
+                    })
+                    
+                    # Start new page
+                    page_num += 1
+                    current_page_text = [para_text]
+                    current_words = word_count
+                else:
+                    current_page_text.append(para_text)
+                    current_words += word_count
+            
+            # Add remaining text
+            if current_page_text:
+                paragraphs.append({
+                    'page': page_num,
+                    'text': '\n'.join(current_page_text),
+                    'source': file_path.name,
+                    'section': current_section,
+                    'metadata': {
+                        'word_count': current_words,
+                        'paragraph_count': len(current_page_text)
+                    }
+                })
+            
+            logger.info(f"Extracted {len(paragraphs)} logical pages from DOCX: {file_path.name}")
+            return paragraphs
+            
+        except Exception as e:
+            logger.error(f"DOCX extraction failed for {file_path}: {str(e)}")
+            return []
+
+    def _extract_xlsx(self, file_path: Path) -> List[Dict[str, Any]]:
+        """Extract text from XLSX files"""
+        try:
+            workbook = load_workbook(str(file_path), read_only=True)
+            sheets = []
+            
+            for sheet_name in workbook.sheetnames:
+                sheet = workbook[sheet_name]
+                rows_data = []
+                
+                for row in sheet.iter_rows(values_only=True):
+                    row_text = []
+                    for cell in row:
+                        if cell is not None:
+                            row_text.append(str(cell))
+                    if row_text:
+                        rows_data.append(' | '.join(row_text))
+                
+                if rows_data:
+                    sheets.append({
+                        'page': len(sheets) + 1,
+                        'text': '\n'.join(rows_data),
+                        'source': file_path.name,
+                        'section': f"Sheet: {sheet_name}",
+                        'metadata': {
+                            'sheet_name': sheet_name,
+                            'row_count': len(rows_data),
+                            'max_column': sheet.max_column
+                        }
+                    })
+            
+            workbook.close()
+            logger.info(f"Extracted {len(sheets)} sheets from XLSX: {file_path.name}")
+            return sheets
+            
+        except Exception as e:
+            logger.error(f"XLSX extraction failed for {file_path}: {str(e)}")
+            return []
+
+    def _extract_xls(self, file_path: Path) -> List[Dict[str, Any]]:
+        """Extract text from XLS files"""
+        try:
+            workbook = xlrd.open_workbook(str(file_path))
+            sheets = []
+            
+            for sheet_idx in range(workbook.nsheets):
+                sheet = workbook.sheet_by_index(sheet_idx)
+                rows_data = []
+                
+                for row_idx in range(sheet.nrows):
+                    row_values = []
+                    for col_idx in range(sheet.ncols):
+                        cell = sheet.cell(row_idx, col_idx)
+                        if cell.value:
+                            row_values.append(str(cell.value))
+                    if row_values:
+                        rows_data.append(' | '.join(row_values))
+                
+                if rows_data:
+                    sheets.append({
+                        'page': sheet_idx + 1,
+                        'text': '\n'.join(rows_data),
+                        'source': file_path.name,
+                        'section': f"Sheet: {sheet.name}",
+                        'metadata': {
+                            'sheet_name': sheet.name,
+                            'row_count': sheet.nrows,
+                            'col_count': sheet.ncols
+                        }
+                    })
+            
+            logger.info(f"Extracted {len(sheets)} sheets from XLS: {file_path.name}")
+            return sheets
+            
+        except Exception as e:
+            logger.error(f"XLS extraction failed for {file_path}: {str(e)}")
+            return []
+
+    def _extract_epub(self, file_path: Path) -> List[Dict[str, Any]]:
+        """Extract text from EPUB files"""
+        try:
+            book = epub.read_epub(str(file_path))
+            chapters = []
+            chapter_num = 1
+            
+            for item in book.get_items():
+                if item.get_type() == ebooklib.ITEM_DOCUMENT:
+                    content = item.get_content().decode('utf-8')
+                    
+                    # Parse HTML content
+                    if HTML_AVAILABLE:
+                        soup = BeautifulSoup(content, 'html.parser')
+                        text = soup.get_text()
+                    else:
+                        # Basic HTML tag removal
+                        import re
+                        text = re.sub(r'<[^>]+>', '', content)
+                    
+                    if text.strip():
+                        chapters.append({
+                            'page': chapter_num,
+                            'text': text,
+                            'source': file_path.name,
+                            'section': f"Chapter {chapter_num}",
+                            'metadata': {
+                                'item_id': item.get_id(),
+                                'item_name': item.get_name(),
+                                'char_count': len(text)
+                            }
+                        })
+                        chapter_num += 1
+            
+            logger.info(f"Extracted {len(chapters)} chapters from EPUB: {file_path.name}")
+            return chapters
+            
+        except Exception as e:
+            logger.error(f"EPUB extraction failed for {file_path}: {str(e)}")
+            return []
+
+    def _extract_html(self, file_path: Path) -> List[Dict[str, Any]]:
+        """Extract text from HTML files"""
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
+                content = file.read()
+            
+            if HTML_AVAILABLE:
+                soup = BeautifulSoup(content, 'html.parser')
+                
+                # Remove script and style elements
+                for script in soup(["script", "style"]):
+                    script.extract()
+                
+                text = soup.get_text()
+                title = soup.title.string if soup.title else file_path.stem
+            else:
+                # Basic HTML tag removal
+                import re
+                text = re.sub(r'<[^>]+>', '', content)
+                title = file_path.stem
+            
+            # Clean up whitespace
+            lines = (line.strip() for line in text.splitlines())
+            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+            text = ' '.join(chunk for chunk in chunks if chunk)
+            
+            if text.strip():
+                return [{
+                    'page': 1,
+                    'text': text,
+                    'source': file_path.name,
+                    'section': title,
+                    'metadata': {
+                        'title': title,
+                        'char_count': len(text),
+                        'file_size': file_path.stat().st_size
+                    }
+                }]
+            
+            return []
+            
+        except Exception as e:
+            logger.error(f"HTML extraction failed for {file_path}: {str(e)}")
+            return []
+
+    def _extract_rtf(self, file_path: Path) -> List[Dict[str, Any]]:
+        """Extract text from RTF files"""
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
+                rtf_content = file.read()
+            
+            text = rtf_to_text(rtf_content)
+            
+            if text.strip():
+                return [{
+                    'page': 1,
+                    'text': text,
+                    'source': file_path.name,
+                    'section': "RTF Document",
+                    'metadata': {
+                        'char_count': len(text),
+                        'file_size': file_path.stat().st_size
+                    }
+                }]
+            
+            return []
+            
+        except Exception as e:
+            logger.error(f"RTF extraction failed for {file_path}: {str(e)}")
+            return []
+
+    def _extract_odt(self, file_path: Path) -> List[Dict[str, Any]]:
+        """Extract text from ODT files"""
+        try:
+            doc = load(str(file_path))
+            paragraphs = doc.getElementsByType(text.P)
+            
+            text_content = []
+            for paragraph in paragraphs:
+                para_text = teletype.extractText(paragraph)
+                if para_text.strip():
+                    text_content.append(para_text)
+            
+            full_text = '\n'.join(text_content)
+            
+            if full_text.strip():
+                return [{
+                    'page': 1,
+                    'text': full_text,
+                    'source': file_path.name,
+                    'section': "ODT Document",
+                    'metadata': {
+                        'paragraph_count': len(text_content),
+                        'char_count': len(full_text)
+                    }
+                }]
+            
+            return []
+            
+        except Exception as e:
+            logger.error(f"ODT extraction failed for {file_path}: {str(e)}")
+            return []
+
+    def _extract_mobi(self, file_path: Path) -> List[Dict[str, Any]]:
+        """Extract text from MOBI files"""
+        try:
+            # This is a placeholder - MOBI extraction is complex
+            # Would need kindle_unpack or similar library
+            logger.warning(f"MOBI extraction not fully implemented for {file_path}")
+            return []
+            
+        except Exception as e:
+            logger.error(f"MOBI extraction failed for {file_path}: {str(e)}")
+            return []
+
+    def _extract_txt(self, file_path: Path) -> List[Dict[str, Any]]:
+        """Extract text from plain text files"""
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
+                content = file.read()
+            
+            if content.strip():
+                return [{
+                    'page': 1,
+                    'text': content,
+                    'source': file_path.name,
+                    'section': "Text Document",
+                    'metadata': {
+                        'char_count': len(content),
+                        'line_count': len(content.splitlines()),
+                        'file_size': file_path.stat().st_size
+                    }
+                }]
+            
+            return []
+            
+        except Exception as e:
+            logger.error(f"Text extraction failed for {file_path}: {str(e)}")
+            return []
+
+    def _extract_csv(self, file_path: Path) -> List[Dict[str, Any]]:
+        """Extract text from CSV files"""
+        try:
+            rows_data = []
+            
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
+                # Try to detect delimiter
+                sample = file.read(1024)
+                file.seek(0)
+                
+                sniffer = csv.Sniffer()
+                delimiter = sniffer.sniff(sample).delimiter
+                
+                reader = csv.reader(file, delimiter=delimiter)
+                
+                for row_num, row in enumerate(reader, 1):
+                    if row and any(cell.strip() for cell in row):
+                        row_text = ' | '.join(str(cell).strip() for cell in row if str(cell).strip())
+                        if row_text:
+                            rows_data.append(f"Row {row_num}: {row_text}")
+            
+            if rows_data:
+                return [{
+                    'page': 1,
+                    'text': '\n'.join(rows_data),
+                    'source': file_path.name,
+                    'section': "CSV Data",
+                    'metadata': {
+                        'row_count': len(rows_data),
+                        'delimiter': delimiter,
+                        'file_size': file_path.stat().st_size
+                    }
+                }]
+            
+            return []
+            
+        except Exception as e:
+            logger.error(f"CSV extraction failed for {file_path}: {str(e)}")
+            return []
+
+    def _extract_text_fallback(self, file_path: Path) -> List[Dict[str, Any]]:
+        """Fallback text extraction for unknown formats"""
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
+                content = file.read(10000)  # Read first 10KB
+            
+            # Basic cleanup
+            content = re.sub(r'[^\w\s\.\,\!\?\;\:\-\(\)]', ' ', content)
+            content = re.sub(r'\s+', ' ', content).strip()
+            
+            if content and len(content) > 50:  # Must have substantial content
+                return [{
+                    'page': 1,
+                    'text': content,
+                    'source': file_path.name,
+                    'section': "Unknown Format (Fallback)",
+                    'metadata': {
+                        'extraction_method': 'fallback',
+                        'char_count': len(content),
+                        'file_type': file_path.suffix
+                    }
+                }]
+            
+            return []
+            
+        except Exception as e:
+            logger.error(f"Fallback extraction failed for {file_path}: {str(e)}")
+            return []
 
 class GPUVectorStore:
     """
@@ -406,6 +1039,7 @@ class GPUVectorStore:
                     'title': chunk.title,
                     'category': chunk.category,
                     'version': chunk.version,
+                    'file_type': chunk.file_type,
                     'tags': json.dumps(chunk.tags),
                     **chunk.metadata
                 })
@@ -485,6 +1119,8 @@ class GPUVectorStore:
                         continue
                     if filters.get('version') and meta.get('version') != filters.get('version'):
                         continue
+                    if filters.get('file_type') and meta.get('file_type') != filters.get('file_type'):
+                        continue
 
                 confidence = similarities[i]
                 if confidence >= min_confidence:
@@ -504,12 +1140,13 @@ class GPUVectorStore:
                     'confidence': round(float(similarities[i]), 3),
                     'category': meta['category'],
                     'version': meta['version'],
+                    'file_type': meta.get('file_type', 'unknown'),
                     'tags': json.loads(meta.get('tags', '[]')),
                     'page': meta['page'],
                     'section': meta['section'],
                     'metadata': {
                         k: v for k, v in meta.items()
-                        if k not in ['title', 'source', 'category', 'version', 'tags', 'page', 'section']
+                        if k not in ['title', 'source', 'category', 'version', 'tags', 'page', 'section', 'file_type']
                     }
                 })
 
@@ -536,12 +1173,16 @@ class GPUVectorStore:
             # Calculate stats
             categories = {}
             versions = {}
+            file_types = {}
 
             for meta in metadata:
                 cat = meta.get('category', 'unknown')
                 ver = meta.get('version', 'unknown')
+                ft = meta.get('file_type', 'unknown')
+                
                 categories[cat] = categories.get(cat, 0) + 1
                 versions[ver] = versions.get(ver, 0) + 1
+                file_types[ft] = file_types.get(ft, 0) + 1
 
             avg_response_time = (
                 sum(self._stats['response_times']) / len(self._stats['response_times'])
@@ -554,6 +1195,7 @@ class GPUVectorStore:
                 'avg_response_time_ms': round(avg_response_time, 2),
                 'categories': categories,
                 'versions': versions,
+                'file_types': file_types,
                 'last_updated': self._stats['last_updated'].isoformat(),
                 'gpu_enabled': self.device != "cpu",
                 'gpu_info': self.gpu_info
@@ -564,10 +1206,11 @@ class GPUVectorStore:
             return {}
 
 class DocumentProcessor:
-    """Handles PDF processing and text extraction"""
+    """Handles multi-format document processing and text extraction"""
 
     def __init__(self):
         self.config = Config()
+        self.extractor = MultiFormatExtractor()
 
     def detect_rhel_version(self, text: str) -> str:
         """Detect RHEL version from document text"""
@@ -584,29 +1227,6 @@ class DocumentProcessor:
             return "rhel10"
 
         return "unknown"
-
-    def extract_text_from_pdf(self, pdf_path: Path) -> List[Dict[str, Any]]:
-        """Extract text from PDF with page and section information"""
-        try:
-            with open(pdf_path, 'rb') as file:
-                pdf_reader = PyPDF2.PdfReader(file)
-                pages = []
-
-                for page_num, page in enumerate(pdf_reader.pages, 1):
-                    text = page.extract_text()
-                    if text.strip():
-                        pages.append({
-                            'page': page_num,
-                            'text': text,
-                            'source': pdf_path.name
-                        })
-
-                logger.info(f"Extracted {len(pages)} pages from {pdf_path.name}")
-                return pages
-
-        except Exception as e:
-            logger.error(f"Error processing PDF {pdf_path}: {str(e)}")
-            return []
 
     def categorize_content(self, text: str) -> str:
         """Categorize content based on keywords"""
@@ -664,53 +1284,69 @@ class DocumentProcessor:
 
         return chunks
 
-    def process_document(self, pdf_path: Path) -> List[DocumentChunk]:
-        """Process a PDF document into chunks"""
-        pages = self.extract_text_from_pdf(pdf_path)
-        if not pages:
+    def process_document(self, file_path: Path) -> List[DocumentChunk]:
+        """Process a document of any supported format into chunks"""
+        
+        if not self.extractor.can_process(file_path):
+            logger.warning(f"Unsupported file format: {file_path}")
             return []
 
-        chunks = []
-        doc_title = pdf_path.stem.replace('-', ' ').title()
+        try:
+            # Extract text using appropriate extractor
+            pages = self.extractor.extract_text(file_path)
+            if not pages:
+                logger.warning(f"No content extracted from {file_path}")
+                return []
 
-        # Detect document-level metadata
-        full_text = ' '.join([page['text'] for page in pages])
-        doc_version = self.detect_rhel_version(full_text)
-        doc_category = self.categorize_content(full_text)
+            chunks = []
+            doc_title = file_path.stem.replace('-', ' ').replace('_', ' ').title()
+            file_type = self.extractor.get_file_type(file_path)
 
-        for page_data in pages:
-            page_text = page_data['text']
-            page_chunks = self.chunk_text(page_text)
+            # Detect document-level metadata
+            full_text = ' '.join([page['text'] for page in pages])
+            doc_version = self.detect_rhel_version(full_text)
+            doc_category = self.categorize_content(full_text)
 
-            for i, chunk_text in enumerate(page_chunks):
-                chunk_id = hashlib.md5(
-                    f"{pdf_path.name}_{page_data['page']}_{i}".encode()
-                ).hexdigest()
+            for page_data in pages:
+                page_text = page_data['text']
+                page_chunks = self.chunk_text(page_text)
 
-                chunk = DocumentChunk(
-                    id=chunk_id,
-                    content=chunk_text,
-                    source=pdf_path.name,
-                    page=page_data['page'],
-                    section=self.extract_section_title(chunk_text),
-                    title=doc_title,
-                    category=self.categorize_content(chunk_text) or doc_category,
-                    version=self.detect_rhel_version(chunk_text) or doc_version,
-                    tags=self.extract_tags(chunk_text),
-                    metadata={
-                        'file_size': pdf_path.stat().st_size,
-                        'processed_at': datetime.now().isoformat(),
-                        'chunk_index': i,
-                        'total_chunks': len(page_chunks)
-                    }
-                )
-                chunks.append(chunk)
+                for i, chunk_text in enumerate(page_chunks):
+                    chunk_id = hashlib.md5(
+                        f"{file_path.name}_{page_data['page']}_{i}".encode()
+                    ).hexdigest()
 
-        logger.info(f"Processed {pdf_path.name}: {len(chunks)} chunks created")
-        return chunks
+                    chunk = DocumentChunk(
+                        id=chunk_id,
+                        content=chunk_text,
+                        source=file_path.name,
+                        page=page_data['page'],
+                        section=page_data.get('section', self.extract_section_title(chunk_text)),
+                        title=doc_title,
+                        category=self.categorize_content(chunk_text) or doc_category,
+                        version=self.detect_rhel_version(chunk_text) or doc_version,
+                        file_type=file_type,
+                        tags=self.extract_tags(chunk_text),
+                        metadata={
+                            'file_size': file_path.stat().st_size,
+                            'processed_at': datetime.now().isoformat(),
+                            'chunk_index': i,
+                            'total_chunks': len(page_chunks),
+                            'extraction_metadata': page_data.get('metadata', {}),
+                            **page_data.get('metadata', {})
+                        }
+                    )
+                    chunks.append(chunk)
+
+            logger.info(f"Processed {file_path.name} ({file_type}): {len(chunks)} chunks created")
+            return chunks
+
+        except Exception as e:
+            logger.error(f"Error processing {file_path}: {str(e)}")
+            return []
 
 class DocumentManager:
-    """Manages document processing and indexing"""
+    """Manages document processing and indexing for multiple formats"""
 
     def __init__(self, vector_store: GPUVectorStore):
         self.config = Config()
@@ -722,35 +1358,50 @@ class DocumentManager:
         os.makedirs(self.config.DOCUMENTS_DIR, exist_ok=True)
 
     async def scan_and_process_documents(self):
-        """Scan documents directory and process new PDFs"""
+        """Scan documents directory and process all supported file types"""
         docs_path = Path(self.config.DOCUMENTS_DIR)
-        pdf_files = list(docs_path.glob("*.pdf"))
+        
+        # Find all supported files
+        supported_files = []
+        for ext in self.config.SUPPORTED_EXTENSIONS.keys():
+            pattern = f"*{ext}"
+            files = list(docs_path.glob(pattern))
+            supported_files.extend(files)
 
-        logger.info(f"Found {len(pdf_files)} PDF files")
+        logger.info(f"Found {len(supported_files)} supported files")
 
-        for pdf_path in pdf_files:
-            if pdf_path.name not in self.processed_files:
-                await self.process_document(pdf_path)
-                self.processed_files.add(pdf_path.name)
+        for file_path in supported_files:
+            if file_path.name not in self.processed_files:
+                await self.process_document(file_path)
+                self.processed_files.add(file_path.name)
 
-    async def process_document(self, pdf_path: Path):
+    async def process_document(self, file_path: Path):
         """Process a single document"""
         try:
-            logger.info(f"Processing document: {pdf_path.name}")
-            chunks = self.processor.process_document(pdf_path)
+            logger.info(f"Processing document: {file_path.name}")
+            chunks = self.processor.process_document(file_path)
 
             if chunks:
                 self.vector_store.add_chunks(chunks)
-                logger.info(f"Successfully processed {pdf_path.name}")
+                logger.info(f"Successfully processed {file_path.name}")
             else:
-                logger.warning(f"No content extracted from {pdf_path.name}")
+                logger.warning(f"No content extracted from {file_path.name}")
 
         except Exception as e:
-            logger.error(f"Error processing {pdf_path.name}: {str(e)}")
+            logger.error(f"Error processing {file_path.name}: {str(e)}")
 
     async def add_document(self, file_content: bytes, filename: str):
         """Add a new document from uploaded content"""
         try:
+            # Check file size
+            if len(file_content) > self.config.MAX_FILE_SIZE:
+                raise HTTPException(status_code=413, detail=f"File size exceeds maximum limit of {self.config.MAX_FILE_SIZE // (1024*1024)}MB")
+
+            # Check if file type is supported
+            file_ext = Path(filename).suffix.lower()
+            if file_ext not in self.config.SUPPORTED_EXTENSIONS:
+                raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_ext}. Supported types: {list(self.config.SUPPORTED_EXTENSIONS.keys())}")
+
             # First try to write to a temporary location
             temp_dir = "/tmp/uploads"
             os.makedirs(temp_dir, exist_ok=True)
@@ -763,22 +1414,42 @@ class DocumentManager:
             target_path = Path(self.config.DOCUMENTS_DIR) / filename
             try:
                 shutil.copy2(temp_path, target_path)
-                pdf_path = target_path
+                file_path = target_path
                 logger.info(f"Document saved to permanent location: {target_path}")
             except Exception as e:
                 # If copy fails, use the temp file
                 logger.warning(f"Could not copy to documents dir: {str(e)}, using temp file")
-                pdf_path = temp_path
+                file_path = temp_path
 
             # Process the document
-            await self.process_document(pdf_path)
+            await self.process_document(file_path)
             self.processed_files.add(filename)
 
-            return {"message": f"Document {filename} processed successfully"}
+            return {
+                "message": f"Document {filename} processed successfully",
+                "file_type": self.config.SUPPORTED_EXTENSIONS.get(file_ext, "Unknown"),
+                "size": len(file_content)
+            }
 
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error adding document {filename}: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Failed to process document: {str(e)}")
+
+    def get_supported_formats(self) -> Dict[str, bool]:
+        """Get information about supported file formats"""
+        formats = {}
+        
+        # Check which formats are actually available
+        extractor = MultiFormatExtractor()
+        for ext, description in self.config.SUPPORTED_EXTENSIONS.items():
+            formats[ext] = {
+                "description": description,
+                "available": ext in extractor.supported_formats
+            }
+        
+        return formats
 
 # Global instances
 vector_store = None
@@ -788,7 +1459,7 @@ doc_manager = None
 async def lifespan(app: FastAPI):
     """Application lifespan management"""
     # Startup
-    logger.info("Starting Red Hat Documentation RAG Backend with GPU Support")
+    logger.info("Starting Red Hat Documentation RAG Backend with Multi-Format Support and GPU Acceleration")
 
     global vector_store
     vector_store = GPUVectorStore(db_path=Config.CHROMA_DB_PATH)
@@ -811,9 +1482,9 @@ async def lifespan(app: FastAPI):
 
 # FastAPI application
 app = FastAPI(
-    title="Red Hat Documentation RAG API (GPU-Accelerated)",
-    description="Intelligent search and retrieval for Red Hat system administration documentation with GPU acceleration",
-    version="1.0.0",
+    title="Red Hat Documentation RAG API (Multi-Format, GPU-Accelerated)",
+    description="Intelligent search and retrieval for Red Hat system administration documentation with multi-format support and GPU acceleration",
+    version="2.0.0",
     lifespan=lifespan
 )
 
@@ -838,7 +1509,11 @@ async def serve_frontend():
         return FileResponse("static/index.html")
     else:
         return JSONResponse(
-            content={"message": "Red Hat Documentation RAG API (GPU-Accelerated)", "docs": "/docs"},
+            content={
+                "message": "Red Hat Documentation RAG API (Multi-Format, GPU-Accelerated)", 
+                "docs": "/docs",
+                "supported_formats": list(Config.SUPPORTED_EXTENSIONS.keys())
+            },
             status_code=200
         )
 
@@ -880,9 +1555,17 @@ async def get_stats():
     try:
         stats = vector_store.get_stats()
 
-        # Count total documents
+        # Count total documents by type
         docs_path = Path(Config.DOCUMENTS_DIR)
-        total_docs = len(list(docs_path.glob("*.pdf")))
+        total_docs = 0
+        file_type_counts = {}
+        
+        for ext in Config.SUPPORTED_EXTENSIONS.keys():
+            files = list(docs_path.glob(f"*{ext}"))
+            count = len(files)
+            total_docs += count
+            if count > 0:
+                file_type_counts[ext] = count
 
         return StatsResponse(
             total_documents=total_docs,
@@ -893,8 +1576,10 @@ async def get_stats():
             last_updated=stats.get('last_updated', datetime.now().isoformat()),
             categories=stats.get('categories', {}),
             versions=stats.get('versions', {}),
+            file_types=stats.get('file_types', {}),
             gpu_enabled=stats.get('gpu_enabled', False),
-            gpu_info=stats.get('gpu_info')
+            gpu_info=stats.get('gpu_info'),
+            supported_formats=doc_manager.get_supported_formats() if doc_manager else {}
         )
 
     except Exception as e:
@@ -906,9 +1591,15 @@ async def upload_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...)
 ):
-    """Upload a new PDF document"""
-    if not file.filename.lower().endswith('.pdf'):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+    """Upload a new document (supports multiple formats)"""
+    
+    # Check file extension
+    file_ext = Path(file.filename).suffix.lower() if file.filename else ""
+    if file_ext not in Config.SUPPORTED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Unsupported file type: {file_ext}. Supported formats: {list(Config.SUPPORTED_EXTENSIONS.keys())}"
+        )
 
     try:
         content = await file.read()
@@ -919,6 +1610,8 @@ async def upload_document(
             status_code=201
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Upload error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -936,6 +1629,9 @@ async def get_document(filename: str, request: Request):
         # Log the request for debugging
         logger.info(f"Document {request.method} request for: {filename}")
 
+        # Check if file type is supported for serving
+        file_ext = Path(filename).suffix.lower()
+        
         # First try the main documents directory
         file_path = Path(Config.DOCUMENTS_DIR) / filename
         logger.debug(f"Checking main documents path: {file_path}")
@@ -953,20 +1649,27 @@ async def get_document(filename: str, request: Request):
                 # List available files for debugging
                 docs_path = Path(Config.DOCUMENTS_DIR)
                 if docs_path.exists():
-                    available_files = list(docs_path.glob("*.pdf"))
-                    logger.debug(f"Available PDF files: {[f.name for f in available_files]}")
+                    available_files = []
+                    for ext in Config.SUPPORTED_EXTENSIONS.keys():
+                        available_files.extend(list(docs_path.glob(f"*{ext}")))
+                    logger.debug(f"Available files: {[f.name for f in available_files]}")
 
                 raise HTTPException(status_code=404, detail=f"Document '{filename}' not found")
 
-        # Verify it's actually a PDF file
-        if not filename.lower().endswith('.pdf'):
-            logger.warning(f"Non-PDF file requested: {filename}")
-            raise HTTPException(status_code=400, detail="Only PDF files are supported")
+        # Verify it's a supported file type
+        if file_ext not in Config.SUPPORTED_EXTENSIONS:
+            logger.warning(f"Unsupported file type requested: {filename}")
+            raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_ext}")
 
         # Check file permissions
         if not os.access(file_path, os.R_OK):
             logger.error(f"Cannot read file: {file_path}")
             raise HTTPException(status_code=403, detail="File access denied")
+
+        # Determine MIME type
+        mime_type, _ = mimetypes.guess_type(filename)
+        if not mime_type:
+            mime_type = 'application/octet-stream'
 
         # For HEAD requests, just return success without file content
         if request.method == "HEAD":
@@ -975,7 +1678,7 @@ async def get_document(filename: str, request: Request):
             return Response(
                 status_code=200,
                 headers={
-                    "Content-Type": "application/pdf",
+                    "Content-Type": mime_type,
                     "Content-Length": str(file_path.stat().st_size),
                     "Content-Disposition": f"inline; filename={filename}",
                     "Cache-Control": "public, max-age=3600",
@@ -984,10 +1687,10 @@ async def get_document(filename: str, request: Request):
             )
 
         # For GET requests, return the actual file
-        logger.info(f"Serving PDF: {file_path} (size: {file_path.stat().st_size} bytes)")
+        logger.info(f"Serving file: {file_path} (size: {file_path.stat().st_size} bytes)")
         return FileResponse(
             path=str(file_path),
-            media_type='application/pdf',
+            media_type=mime_type,
             filename=filename,
             headers={
                 "Content-Disposition": f"inline; filename={filename}",
@@ -1007,31 +1710,57 @@ async def list_documents():
     """List all available documents"""
     try:
         docs_path = Path(Config.DOCUMENTS_DIR)
-        pdf_files = list(docs_path.glob("*.pdf"))
+        all_files = []
+
+        # Check for all supported file types
+        for ext in Config.SUPPORTED_EXTENSIONS.keys():
+            files = list(docs_path.glob(f"*{ext}"))
+            all_files.extend(files)
 
         # Also check temp directory
         temp_path = Path("/tmp/uploads")
         if temp_path.exists():
-            temp_files = list(temp_path.glob("*.pdf"))
-            # Only include temp files that aren't in the main directory
-            main_filenames = [f.name for f in pdf_files]
-            pdf_files.extend([f for f in temp_files if f.name not in main_filenames])
+            for ext in Config.SUPPORTED_EXTENSIONS.keys():
+                temp_files = list(temp_path.glob(f"*{ext}"))
+                # Only include temp files that aren't in the main directory
+                main_filenames = [f.name for f in all_files]
+                all_files.extend([f for f in temp_files if f.name not in main_filenames])
 
         documents = []
-        for pdf_path in pdf_files:
-            stat = pdf_path.stat()
+        for file_path in all_files:
+            stat = file_path.stat()
+            file_ext = file_path.suffix.lower()
+            
             documents.append({
-                'filename': pdf_path.name,
+                'filename': file_path.name,
                 'size': stat.st_size,
                 'modified': datetime.fromtimestamp(stat.st_mtime).isoformat(),
-                'processed': pdf_path.name in doc_manager.processed_files,
-                'location': 'temporary' if '/tmp/' in str(pdf_path) else 'permanent'
+                'processed': file_path.name in doc_manager.processed_files,
+                'location': 'temporary' if '/tmp/' in str(file_path) else 'permanent',
+                'file_type': file_ext,
+                'description': Config.SUPPORTED_EXTENSIONS.get(file_ext, 'Unknown')
             })
 
-        return {"documents": documents}
+        return {"documents": documents, "total_count": len(documents)}
 
     except Exception as e:
         logger.error(f"List documents error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/formats")
+async def get_supported_formats():
+    """Get information about supported file formats"""
+    try:
+        formats = doc_manager.get_supported_formats() if doc_manager else {}
+        
+        return {
+            "supported_formats": formats,
+            "total_formats": len(formats),
+            "available_formats": len([f for f in formats.values() if f.get("available", False)])
+        }
+    
+    except Exception as e:
+        logger.error(f"Get formats error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/documents/reprocess")
@@ -1095,16 +1824,22 @@ async def health_check():
     gpu_ok = torch.cuda.is_available()
     gpu_info = torch.cuda.get_device_name(0) if gpu_ok else "No GPU available"
 
+    # Check extractor availability
+    extractor = MultiFormatExtractor()
+    format_availability = {ext: ext in extractor.supported_formats for ext in Config.SUPPORTED_EXTENSIONS.keys()}
+
     return {
         "status": "healthy" if vector_store_ok and docs_ok else "degraded",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.0.0",
+        "version": "2.0.0",
         "checks": {
             "vector_store": "ok" if vector_store_ok else "failed",
             "documents_dir": "ok" if docs_ok else "failed",
             "gpu": "ok" if gpu_ok else "not available"
         },
-        "gpu_info": gpu_info if gpu_ok else None
+        "gpu_info": gpu_info if gpu_ok else None,
+        "supported_formats": format_availability,
+        "total_supported": sum(1 for available in format_availability.values() if available)
     }
 
 if __name__ == "__main__":
