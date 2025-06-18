@@ -181,6 +181,10 @@ class SearchResponse(BaseModel):
     query: str
     filters_applied: Dict[str, Any]
 
+class FormatInfo(BaseModel):
+    description: str
+    available: bool
+
 class StatsResponse(BaseModel):
     total_documents: int
     total_chunks: int
@@ -193,7 +197,7 @@ class StatsResponse(BaseModel):
     file_types: Dict[str, int]
     gpu_enabled: bool
     gpu_info: Optional[str] = None
-    supported_formats: Dict[str, bool]
+    supported_formats: Dict[str, FormatInfo]  # Changed from Dict[str, bool] to Dict[str, FormatInfo]
 
 @dataclass
 class DocumentChunk:
