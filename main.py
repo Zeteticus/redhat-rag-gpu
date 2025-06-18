@@ -29,6 +29,7 @@ import mimetypes
 import zipfile
 import csv
 import io
+import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Union, Tuple
@@ -41,7 +42,7 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -51,8 +52,11 @@ try:
     import fitz  # PyMuPDF - better PDF processing
     PDF_AVAILABLE = True
 except ImportError:
-    import PyPDF2  # Fallback to PyPDF2
-    PDF_AVAILABLE = False
+    try:
+        import PyPDF2  # Fallback to PyPDF2
+        PDF_AVAILABLE = True
+    except ImportError:
+        PDF_AVAILABLE = False
     
 try:
     from docx import Document as DocxDocument
@@ -111,6 +115,30 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+def fix_document_permissions():
+    """Fix permissions for document directories"""
+    try:
+        # Create and fix permissions for documents directory
+        docs_path = Config.DOCUMENTS_DIR
+        os.makedirs(docs_path, exist_ok=True)
+        
+        # Fix permissions to ensure writability
+        os.chmod(docs_path, 0o777)
+        
+        # Fix permissions for temp uploads directory
+        temp_dir = "/tmp/uploads"
+        os.makedirs(temp_dir, exist_ok=True)
+        os.chmod(temp_dir, 0o777)
+        
+        # Fix permissions for vector store directory
+        vector_dir = Config.CHROMA_DB_PATH
+        os.makedirs(vector_dir, exist_ok=True)
+        os.chmod(vector_dir, 0o777)
+        
+        logger.info(f"Fixed permissions for document directories")
+    except Exception as e:
+        logger.error(f"Failed to fix document directory permissions: {str(e)}")
 
 # Configuration
 class Config:
@@ -181,6 +209,11 @@ class SearchResponse(BaseModel):
     query: str
     filters_applied: Dict[str, Any]
 
+class FormatInfo(BaseModel):
+    description: str
+    available: bool
+    reason: Optional[str] = None
+
 class StatsResponse(BaseModel):
     total_documents: int
     total_chunks: int
@@ -193,7 +226,7 @@ class StatsResponse(BaseModel):
     file_types: Dict[str, int]
     gpu_enabled: bool
     gpu_info: Optional[str] = None
-    supported_formats: Dict[str, bool]
+    supported_formats: Dict[str, FormatInfo]  # Changed from Dict[str, bool]
 
 @dataclass
 class DocumentChunk:
@@ -221,38 +254,50 @@ class MultiFormatExtractor:
     def _register_extractors(self):
         """Register available extractors based on installed libraries"""
         if PDF_AVAILABLE:
-            self.supported_formats['.pdf'] = self._extract_pdf_pymupdf
-        else:
-            self.supported_formats['.pdf'] = self._extract_pdf_pypdf2
+            if 'fitz' in globals():
+                self.supported_formats['.pdf'] = self._extract_pdf_pymupdf
+                logger.info("Registered PyMuPDF for PDF extraction")
+            else:
+                self.supported_formats['.pdf'] = self._extract_pdf_pypdf2
+                logger.info("Registered PyPDF2 for PDF extraction (fallback)")
             
         if DOCX_AVAILABLE:
             self.supported_formats['.docx'] = self._extract_docx
+            logger.info("Registered python-docx for DOCX extraction")
             
         if XLSX_AVAILABLE:
             self.supported_formats['.xlsx'] = self._extract_xlsx
+            logger.info("Registered openpyxl for XLSX extraction")
             
         if XLS_AVAILABLE:
             self.supported_formats['.xls'] = self._extract_xls
+            logger.info("Registered xlrd for XLS extraction")
             
         if EPUB_AVAILABLE:
             self.supported_formats['.epub'] = self._extract_epub
+            logger.info("Registered ebooklib for EPUB extraction")
             
         if HTML_AVAILABLE:
             self.supported_formats['.html'] = self._extract_html
             self.supported_formats['.htm'] = self._extract_html
+            logger.info("Registered BeautifulSoup for HTML extraction")
             
         if RTF_AVAILABLE:
             self.supported_formats['.rtf'] = self._extract_rtf
+            logger.info("Registered striprtf for RTF extraction")
             
         if ODT_AVAILABLE:
             self.supported_formats['.odt'] = self._extract_odt
+            logger.info("Registered odfpy for ODT extraction")
             
         if MOBI_AVAILABLE:
             self.supported_formats['.mobi'] = self._extract_mobi
+            logger.info("Registered kindle_unpack for MOBI extraction")
         
         # Always available formats
         self.supported_formats['.txt'] = self._extract_txt
         self.supported_formats['.csv'] = self._extract_csv
+        logger.info("Registered built-in extractors for TXT and CSV formats")
         
         logger.info(f"Registered extractors for: {list(self.supported_formats.keys())}")
 
@@ -1376,9 +1421,17 @@ class DocumentManager:
                 self.processed_files.add(file_path.name)
 
     async def process_document(self, file_path: Path):
-        """Process a single document"""
+        """Process a single document with enhanced error reporting"""
         try:
             logger.info(f"Processing document: {file_path.name}")
+            
+            # Check if the file can be processed
+            extractor = MultiFormatExtractor()
+            if not extractor.can_process(file_path):
+                logger.error(f"Format not supported: {file_path.suffix} for {file_path.name}")
+                return
+                
+            # Process the document
             chunks = self.processor.process_document(file_path)
 
             if chunks:
@@ -1389,6 +1442,8 @@ class DocumentManager:
 
         except Exception as e:
             logger.error(f"Error processing {file_path.name}: {str(e)}")
+            # Print stack trace for better debugging
+            logger.error(traceback.format_exc())
 
     async def add_document(self, file_content: bytes, filename: str):
         """Add a new document from uploaded content"""
@@ -1437,17 +1492,45 @@ class DocumentManager:
             logger.error(f"Error adding document {filename}: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Failed to process document: {str(e)}")
 
-    def get_supported_formats(self) -> Dict[str, bool]:
-        """Get information about supported file formats"""
+    def get_supported_formats(self) -> Dict[str, FormatInfo]:
+        """Get information about supported file formats with detailed availability check"""
         formats = {}
         
-        # Check which formats are actually available
+        # Initialize extractor
         extractor = MultiFormatExtractor()
+        
+        # Check which formats are actually available
         for ext, description in self.config.SUPPORTED_EXTENSIONS.items():
-            formats[ext] = {
-                "description": description,
-                "available": ext in extractor.supported_formats
-            }
+            # Check if the format is registered in the extractor
+            has_extractor = ext in extractor.supported_formats
+            
+            # Try to identify why a format might not be available
+            reason = None
+            if not has_extractor:
+                if ext == '.pdf' and not PDF_AVAILABLE:
+                    reason = "Missing PyMuPDF or PyPDF2 library"
+                elif ext == '.docx' and not DOCX_AVAILABLE:
+                    reason = "Missing python-docx library"
+                elif ext == '.xlsx' and not XLSX_AVAILABLE:
+                    reason = "Missing openpyxl library"
+                elif ext == '.xls' and not XLS_AVAILABLE:
+                    reason = "Missing xlrd library"
+                elif ext == '.epub' and not EPUB_AVAILABLE:
+                    reason = "Missing ebooklib library"
+                elif ext in ['.html', '.htm'] and not HTML_AVAILABLE:
+                    reason = "Missing beautifulsoup4 library"
+                elif ext == '.rtf' and not RTF_AVAILABLE:
+                    reason = "Missing striprtf library"
+                elif ext == '.odt' and not ODT_AVAILABLE:
+                    reason = "Missing odfpy library"
+                elif ext == '.mobi' and not MOBI_AVAILABLE:
+                    reason = "Missing kindle_unpack library"
+            
+            formats[ext] = FormatInfo(
+                description=description,
+                available=has_extractor,
+                reason=reason
+            )
         
         return formats
 
@@ -1460,6 +1543,9 @@ async def lifespan(app: FastAPI):
     """Application lifespan management"""
     # Startup
     logger.info("Starting Red Hat Documentation RAG Backend with Multi-Format Support and GPU Acceleration")
+
+    # Fix document directory permissions
+    fix_document_permissions()
 
     global vector_store
     vector_store = GPUVectorStore(db_path=Config.CHROMA_DB_PATH)
@@ -1674,7 +1760,6 @@ async def get_document(filename: str, request: Request):
         # For HEAD requests, just return success without file content
         if request.method == "HEAD":
             logger.info(f"HEAD request successful for: {filename}")
-            from fastapi import Response
             return Response(
                 status_code=200,
                 headers={
@@ -1756,7 +1841,7 @@ async def get_supported_formats():
         return {
             "supported_formats": formats,
             "total_formats": len(formats),
-            "available_formats": len([f for f in formats.values() if f.get("available", False)])
+            "available_formats": len([f for f in formats.values() if f.available])
         }
     
     except Exception as e:
@@ -1767,6 +1852,9 @@ async def get_supported_formats():
 async def reprocess_documents():
     """Reprocess all documents"""
     try:
+        # Fix permissions before reprocessing
+        fix_document_permissions()
+        
         doc_manager.processed_files.clear()
         await doc_manager.scan_and_process_documents()
 
@@ -1842,7 +1930,20 @@ async def health_check():
         "total_supported": sum(1 for available in format_availability.values() if available)
     }
 
+@app.post("/fix-permissions")
+async def fix_app_permissions():
+    """Endpoint to fix permissions manually"""
+    try:
+        fix_document_permissions()
+        return {"message": "Permissions fixed successfully"}
+    except Exception as e:
+        logger.error(f"Error fixing permissions: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
+    # Fix permissions before starting
+    fix_document_permissions()
+    
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
