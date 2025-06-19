@@ -8,10 +8,72 @@ PERSISTENT_DATA_DIR="$HOME/rag-persistent-data"
 CONTAINER_NAME="redhat-rag-gpu"
 IMAGE_NAME="localhost/redhat-rag-gpu:latest"
 
-# Stop any existing containers
-echo "📦 Cleaning up existing containers..."
-podman stop $CONTAINER_NAME 2>/dev/null || true
-podman rm $CONTAINER_NAME 2>/dev/null || true
+# CRITICAL FIX: Robust container cleanup function
+cleanup_containers() {
+    echo "🧹 Performing thorough container cleanup..."
+    
+    # Stop all containers with this name
+    for container in $(podman ps -q --filter "name=${CONTAINER_NAME}"); do
+        echo "Stopping container: $container"
+        podman stop $container 2>/dev/null || true
+    done
+    
+    # Remove all containers with this name (running or stopped)
+    for container in $(podman ps -aq --filter "name=${CONTAINER_NAME}"); do
+        echo "Removing container: $container"
+        podman rm -f $container 2>/dev/null || true
+    done
+    
+    # Double-check cleanup worked
+    if podman ps -a --format "{{.Names}}" | grep -q "^${CONTAINER_NAME}$"; then
+        echo "⚠️ Container still exists, force removing by ID..."
+        CONTAINER_ID=$(podman ps -a --filter "name=${CONTAINER_NAME}" --format "{{.ID}}" | head -1)
+        if [ ! -z "$CONTAINER_ID" ]; then
+            podman rm -f $CONTAINER_ID || true
+        fi
+    fi
+    
+    echo "✅ Container cleanup complete"
+}
+
+# CRITICAL FIX: GPU device creation function
+setup_gpu_devices() {
+    echo "🔧 Setting up GPU devices..."
+    
+    # Load NVIDIA kernel modules
+    sudo modprobe nvidia 2>/dev/null || true
+    sudo modprobe nvidia-uvm 2>/dev/null || true
+    sudo modprobe nvidia-modeset 2>/dev/null || true
+    
+    # Create device files using nvidia-smi
+    sudo nvidia-smi -pm 1 >/dev/null 2>&1 || true
+    
+    # Check which devices exist
+    echo "Available NVIDIA devices:"
+    ls -la /dev/nvidia* 2>/dev/null || echo "No NVIDIA devices found"
+    
+    # Manually create missing critical devices
+    if [ ! -e "/dev/nvidia-modeset" ] && grep -q nvidia-modeset /proc/devices; then
+        MAJOR=$(awk '/nvidia-modeset/ {print $1}' /proc/devices)
+        if [ ! -z "$MAJOR" ]; then
+            sudo mknod /dev/nvidia-modeset c $MAJOR 0
+            sudo chmod 666 /dev/nvidia-modeset
+            echo "Created /dev/nvidia-modeset"
+        fi
+    fi
+    
+    if [ ! -e "/dev/nvidia-uvm" ] && grep -q nvidia-uvm /proc/devices; then
+        MAJOR=$(awk '/nvidia-uvm/ {print $1}' /proc/devices)
+        if [ ! -z "$MAJOR" ]; then
+            sudo mknod /dev/nvidia-uvm c $MAJOR 0
+            sudo chmod 666 /dev/nvidia-uvm
+            echo "Created /dev/nvidia-uvm"
+        fi
+    fi
+}
+
+# Initial cleanup
+cleanup_containers
 
 # Set up persistent directories (bulletproof approach)
 echo "📁 Setting up bulletproof persistent storage..."
@@ -46,7 +108,7 @@ else
     <div class="container">
         <h1>🚀 Red Hat Documentation RAG - Multi-Format</h1>
         <p>GPU-accelerated intelligent document search with comprehensive format support.</p>
-        
+
         <div>
             <a href="/docs" class="link">📚 API Documentation</a>
             <a href="/health" class="link">💓 Health Check</a>
@@ -78,7 +140,7 @@ curl -X POST "http://localhost:8080/api/documents/upload" \\
   -H "Content-Type: multipart/form-data" \\
   -F "file=@your-document.pdf"
 
-# Search documents  
+# Search documents
 curl -X POST "http://localhost:8080/api/search" \\
   -H "Content-Type: application/json" \\
   -d '{"query": "SELinux configuration", "max_results": 10}'
@@ -96,14 +158,14 @@ fi
 if [ -d "data/persistent/vectordb" ] && [ "$(ls -A data/persistent/vectordb 2>/dev/null)" ]; then
     echo "📑 Migrating data from old location..."
     timestamp=$(date +%Y%m%d_%H%M%S)
-    
+
     # Create backup
     tar -czf "$PERSISTENT_DATA_DIR/backups/migration_backup_${timestamp}.tar.gz" data/persistent/ 2>/dev/null || true
-    
+
     # Copy data to new location
     cp -r data/persistent/vectordb/* "$PERSISTENT_DATA_DIR/vectordb/" 2>/dev/null || true
     cp -r data/persistent/documents/* "$PERSISTENT_DATA_DIR/documents/" 2>/dev/null || true
-    
+
     echo "✅ Data migrated from data/persistent/ to $PERSISTENT_DATA_DIR/"
 fi
 
@@ -123,52 +185,126 @@ else
     echo "✅ Container image already exists"
 fi
 
-# Function to deploy with GPU method
+# CRITICAL FIX: Setup GPU devices before deployment
+setup_gpu_devices
+
+# COMPLETELY FIXED: Function to deploy with GPU method
 deploy_with_method() {
     local method="$1"
     local gpu_args="$2"
-    
+    local env_args="$3"
+
     echo "Attempting deployment: $method"
     
-    if podman run -d \
-      --name $CONTAINER_NAME \
-      --publish 127.0.0.1:8080:8080 \
-      --volume "$PERSISTENT_DATA_DIR/documents:/app/documents:Z" \
-      --volume "$PERSISTENT_DATA_DIR/vectordb:/app/vectordb:Z" \
-      --volume "$PERSISTENT_DATA_DIR/models:/app/models:Z" \
-      --volume "$PERSISTENT_DATA_DIR/logs:/app/logs:Z" \
-      --volume "$PERSISTENT_DATA_DIR/static:/app/static:Z" \
-      --security-opt=label=disable \
-      --env DOCUMENTS_DIR=/app/documents \
-      --env CHROMA_DB_PATH=/app/vectordb \
-      --env SENTENCE_TRANSFORMERS_HOME=/app/models \
-      --env MAX_FILE_SIZE=100 \
-      --env CHUNK_SIZE=500 \
-      --env CHUNK_OVERLAP=50 \
-      $gpu_args \
-      $IMAGE_NAME; then
-        echo "✅ Container deployed with $method"
-        return 0
+    # CRITICAL: Clean up any existing container before each attempt
+    cleanup_containers
+    
+    # Build the command
+    local cmd="podman run -d --name $CONTAINER_NAME --replace"
+    cmd="$cmd --publish 127.0.0.1:8080:8080"
+    cmd="$cmd --volume '$PERSISTENT_DATA_DIR/documents:/app/documents:Z'"
+    cmd="$cmd --volume '$PERSISTENT_DATA_DIR/vectordb:/app/vectordb:Z'"
+    cmd="$cmd --volume '$PERSISTENT_DATA_DIR/models:/app/models:Z'"
+    cmd="$cmd --volume '$PERSISTENT_DATA_DIR/logs:/app/logs:Z'"
+    cmd="$cmd --volume '$PERSISTENT_DATA_DIR/static:/app/static:Z'"
+    cmd="$cmd --security-opt=label=disable"
+    cmd="$cmd --env DOCUMENTS_DIR=/app/documents"
+    cmd="$cmd --env CHROMA_DB_PATH=/app/vectordb"
+    cmd="$cmd --env SENTENCE_TRANSFORMERS_HOME=/app/models"
+    cmd="$cmd --env MAX_FILE_SIZE=100"
+    cmd="$cmd --env CHUNK_SIZE=500"
+    cmd="$cmd --env CHUNK_OVERLAP=50"
+    
+    # Add environment args if provided
+    if [ ! -z "$env_args" ]; then
+        cmd="$cmd $env_args"
+    fi
+    
+    # Add GPU args if provided
+    if [ ! -z "$gpu_args" ]; then
+        cmd="$cmd $gpu_args"
+    fi
+    
+    cmd="$cmd $IMAGE_NAME"
+    
+    echo "Executing: $cmd"
+    
+    # Execute the command and check result
+    if eval $cmd 2>/dev/null; then
+        # Wait a moment for container to start
+        sleep 3
+        
+        # Verify container is actually running
+        if podman ps --format "{{.Names}}" | grep -q "^${CONTAINER_NAME}$"; then
+            echo "✅ $method: SUCCESS - Container is running"
+            return 0
+        else
+            echo "❌ $method: Container created but not running"
+            podman logs $CONTAINER_NAME 2>/dev/null || true
+            cleanup_containers
+            return 1
+        fi
     else
-        echo "⚠️ $method failed"
+        echo "⚠️ $method: Command failed"
+        cleanup_containers
         return 1
     fi
 }
 
-# Deploy container - trying different GPU access methods
+# Deploy container - trying different GPU access methods with proper error handling
 echo "🚀 Deploying enhanced multi-format container..."
 
-# Try different GPU methods
-if deploy_with_method "GPU Method 1 (CDI all GPUs)" "--device nvidia.com/gpu=all"; then
-    :
-elif deploy_with_method "GPU Method 2 (CDI GPU 0)" "--device nvidia.com/gpu=0"; then
-    :
-elif deploy_with_method "GPU Method 3 (Legacy devices)" "--device /dev/nvidia0 --device /dev/nvidiactl --device /dev/nvidia-uvm"; then
-    :
-elif deploy_with_method "CPU Fallback" ""; then
-    echo "⚠️ Note: Container will run in CPU mode (no GPU acceleration)"
-else
+DEPLOYMENT_SUCCESS=false
+
+# Method 1: CDI all GPUs (most comprehensive)
+if [ -e "/dev/nvidia0" ] && [ -e "/dev/nvidia-modeset" ] && [ -e "/dev/nvidia-uvm" ]; then
+    if deploy_with_method "GPU Method 1 (CDI all GPUs)" "--device nvidia.com/gpu=all" ""; then
+        DEPLOYMENT_SUCCESS=true
+    fi
+fi
+
+# Method 2: CDI GPU 0 (single GPU)
+if [ "$DEPLOYMENT_SUCCESS" = false ] && [ -e "/dev/nvidia0" ]; then
+    if deploy_with_method "GPU Method 2 (CDI GPU 0)" "--device nvidia.com/gpu=0" ""; then
+        DEPLOYMENT_SUCCESS=true
+    fi
+fi
+
+# Method 3: Legacy device mounting (manual device files)
+if [ "$DEPLOYMENT_SUCCESS" = false ] && [ -e "/dev/nvidia0" ] && [ -e "/dev/nvidiactl" ]; then
+    GPU_DEVICES="--device /dev/nvidia0 --device /dev/nvidiactl"
+    if [ -e "/dev/nvidia-uvm" ]; then
+        GPU_DEVICES="$GPU_DEVICES --device /dev/nvidia-uvm"
+    fi
+    if [ -e "/dev/nvidia-modeset" ]; then
+        GPU_DEVICES="$GPU_DEVICES --device /dev/nvidia-modeset"
+    fi
+    
+    if deploy_with_method "GPU Method 3 (Legacy devices)" "$GPU_DEVICES" ""; then
+        DEPLOYMENT_SUCCESS=true
+    fi
+fi
+
+# Method 4: CPU Fallback (always works)
+if [ "$DEPLOYMENT_SUCCESS" = false ]; then
+    if deploy_with_method "CPU Fallback" "" "--env CUDA_VISIBLE_DEVICES=''"; then
+        echo "⚠️ Note: Container will run in CPU mode (no GPU acceleration)"
+        DEPLOYMENT_SUCCESS=true
+    fi
+fi
+
+# Check final deployment status
+if [ "$DEPLOYMENT_SUCCESS" = false ]; then
     echo "❌ All deployment methods failed"
+    echo ""
+    echo "🔍 Diagnostics:"
+    echo "Available NVIDIA devices:"
+    ls -la /dev/nvidia* 2>/dev/null || echo "No NVIDIA devices found"
+    echo ""
+    echo "Container status:"
+    podman ps -a --filter name=$CONTAINER_NAME
+    echo ""
+    echo "Recent logs (if any):"
     podman logs $CONTAINER_NAME 2>/dev/null || echo "No logs available"
     exit 1
 fi
@@ -210,10 +346,10 @@ if [ -f "$PERSISTENT_DATA_DIR/vectordb/vectors.npy" ]; then
     ls -lh "$PERSISTENT_DATA_DIR/vectordb/"*.{npy,json} 2>/dev/null || true
     echo "📅 Vector data age:"
     stat "$PERSISTENT_DATA_DIR/vectordb/vectors.npy" | grep Modify || true
-    
+
     echo "⏳ Waiting for container to load existing data..."
     sleep 10
-    
+
     # Check if container loaded existing data
     if podman logs $CONTAINER_NAME | grep -q "Loading existing vector store data"; then
         echo "🎉 SUCCESS: Container loaded existing embeddings!"
